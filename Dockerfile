@@ -10,6 +10,7 @@ RUN apk add --no-cache \
     php82-curl \
     php82-dom \
     php82-mbstring \
+    php82-phar \
     php82-xml \
     php82-xmlwriter \
     php82-tokenizer \
