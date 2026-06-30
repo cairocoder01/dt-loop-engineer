@@ -40,11 +40,11 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## `03_verify` — Validation
 
-- [ ] **`01_php_lint.sh` — scope of files to lint** — Should it lint only changed files (`git diff --name-only`) or the whole repo? Changed-files-only is faster but may miss regressions.
-- [ ] **`02_phpunit.sh` — WordPress test suite install** — The `install-wp-tests.sh` script must run against a real DB. Document the expected DB state and how the bootstrap hook prepares it.
-- [ ] **`03_chrome_mcp_e2e.js` — E2E test design** — What are the baseline E2E scenarios? This is the least defined stage. Options: smoke test WP admin login, verify plugin activation, run per-repo Playwright spec files if they exist.
-- [ ] **Per-repo verify overrides** — If a repo ships its own `loop-stages/` directory, should those override or supplement the system ones?
-- [ ] **Verify output capture** — Confirm that both stdout and stderr from failed verify scripts are reliably written to `VERIFY_ERRORS.md` for agent ingestion.
+- [x] **`01_php_lint.sh` — scope of files to lint** — Changed files only (`git diff --name-only HEAD` + `git ls-files --others` for new untracked files). Uses a bash array for PHPCS args so each file is a separate argument. Falls back gracefully (exit 0) if no PHP files changed; no longer incorrectly falls back to all tracked PHP files.
+- [x] **`02_phpunit.sh` — WordPress test suite install** — Exports `WP_TESTS_DIR`, `WP_TESTS_DB_*` env vars that PHPUnit bootstrap files expect. Documents the DB lifecycle: bootstrap installs test library once, pre-issue hook drops/recreates DB, PHPUnit bootstrap re-creates WP tables on each run. Safety guard: re-runs `composer install` if `vendor/bin/phpunit` is missing.
+- [x] **`03_chrome_mcp_e2e.js` — E2E test design** — Rewritten with Playwright Node.js API (direct `chromium.launch`, not the broken HTTP JSON-RPC approach from the scaffold). Uses system Chromium (`CHROME_BIN=/usr/bin/chromium-browser`). Graceful skip (exit 0) if `WP_TEST_URL` is unset or `playwright` not installed. Baseline scenarios: (1) front page loads without PHP fatal errors, (2) admin login page accessible. Per-repo specs from `.loop-engineer/e2e/*.js` each export `async function run(page, baseUrl)`.
+- [x] **Per-repo verify overrides** — Supplement (not replace). System scripts always run first. After them, `core-runner.sh` discovers `.loop-engineer/verify/*.sh|js` in the cloned repo and runs each through the same `run_verify_script` helper. Per-repo scripts can add domain-specific checks without disabling baseline quality gates.
+- [x] **Verify output capture** — Removed the `break` that stopped at first failure. All scripts now run, each captured to a temp file. Only failed output is written to `VERIFY_ERRORS.md`, under a `### script-name (exit N)` section header. This gives the agent the full error set in one retry instead of discovering one failure per iteration.
 
 ---
 
@@ -79,3 +79,4 @@ This file tracks what still needs to be designed, implemented, or decided before
 - [ ] **Dry-run mode** — Add a `DRY_RUN=true` env var that runs all stages but skips the actual `gh pr create` and label mutations.
 - [ ] **Fixture issue** — Create a test GitHub issue in a sandbox repo that has a known-good implementation, so the loop can be exercised end-to-end in CI.
 - [ ] **Stage isolation testing** — Each stage script should be runnable independently with a mock environment for faster iteration during development.
+- [ ] **Test security vulnerabilities** - Multiple access tokens and keys are given to this agent and container. Look for vulnerabilities that could exploit them and be destructive, finding ways to mitigate each.

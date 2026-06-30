@@ -1,94 +1,136 @@
 #!/usr/bin/env node
 /**
- * Verify Stage 03: Browser-driven E2E via Playwright MCP
+ * Verify Stage 03: Browser-driven E2E via Playwright.
  *
- * Connects to the running MCP server and exercises the WordPress instance
- * to confirm the agent's changes work in a real browser environment.
+ * Requires WP_TEST_URL to point to a running WordPress instance. If unset,
+ * exits 0 with a warning (graceful skip) so the loop is not blocked on E2E
+ * infrastructure that hasn't been set up yet. The docker-compose file
+ * (TASKS.md → Infrastructure) provides a linked WP + MySQL service that sets
+ * WP_TEST_URL automatically.
  *
- * TODO: This is a scaffold. Actual test scenarios need to be defined
- * based on what "working" means for each issue type.
+ * Per-repo E2E specs:
+ *   Create .js files in <repo>/.loop-engineer/e2e/. Each must export:
+ *     async function run(page, baseUrl)
+ *   Throw (or return a rejected promise) to fail the spec. The function
+ *   receives the Playwright Page object and the WordPress base URL.
+ *
+ * Baseline scenarios run for every issue, regardless of per-repo specs:
+ *   1. WordPress front page loads (no PHP fatal errors)
+ *   2. Admin login page is accessible (no 5xx, no PHP fatals)
  */
 
-const http = require('http');
+'use strict';
 
-const MCP_PORT = process.env.MCP_PORT || '9222';
-const WP_URL = process.env.WP_TEST_URL || 'http://localhost:8080';
+const path = require('path');
+const fs   = require('fs');
 
-function mcpCall(method, params = {}) {
-    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
-    return new Promise((resolve, reject) => {
-        const options = {
-            hostname: 'localhost',
-            port: parseInt(MCP_PORT),
-            path: '/',
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        };
-        const req = http.request(options, (res) => {
-            let data = '';
-            res.on('data', (c) => { data += c; });
-            res.on('end', () => {
-                const parsed = JSON.parse(data);
-                if (parsed.error) reject(new Error(parsed.error.message));
-                else resolve(parsed.result);
-            });
-        });
-        req.on('error', reject);
-        req.write(body);
-        req.end();
-    });
+const WP_TEST_URL = process.env.WP_TEST_URL || '';
+const REPO_DIR    = process.env.REPO_DIR    || '';
+const CHROME_BIN  = process.env.CHROME_BIN  || '/usr/bin/chromium-browser';
+
+console.log('=== Browser E2E (Playwright) ===');
+
+if (!WP_TEST_URL) {
+    console.log('WP_TEST_URL is not set — skipping E2E verification.');
+    console.log('Set WP_TEST_URL to a running WordPress instance to enable E2E.');
+    console.log('(Non-fatal skip; all other verify stages still apply.)');
+    process.exit(0);
 }
 
-async function smokeTest() {
-    console.log('=== Browser E2E (Chrome MCP) ===');
+let chromium;
+try {
+    ({ chromium } = require('playwright'));
+} catch (e) {
+    console.log('WARNING: playwright package not installed — skipping E2E.');
+    console.log('The Dockerfile should include: npm install -g playwright');
+    process.exit(0);
+}
 
-    // Check if Playwright MCP is reachable
-    try {
-        await mcpCall('browser_navigate', { url: WP_URL });
-        console.log('Navigated to WordPress instance.');
-    } catch (err) {
-        console.error('Could not connect to Playwright MCP server on port ' + MCP_PORT);
-        console.error('Is the MCP server running? Check run_opencode_agent.sh startup.');
-        console.error(err.message);
-        process.exit(1);
+function assert(condition, message) {
+    if (!condition) throw new Error('ASSERTION FAILED: ' + message);
+}
+
+async function runBaseline(page, baseUrl) {
+    // ── Test 1: Front page loads without PHP fatal errors ─────────────────────
+    console.log('  [1] Front page loads...');
+    const resp = await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    assert(resp && resp.status() < 500, `Front page returned HTTP ${resp?.status()}`);
+
+    const body = await page.content();
+    const hasFatal = /(?:Fatal error|Parse error|Uncaught (?:Error|TypeError)|Call to undefined)/i.test(body);
+    assert(!hasFatal, 'PHP fatal/parse error detected on WordPress front page');
+    console.log('  [1] PASSED');
+
+    // ── Test 2: Admin login page accessible ───────────────────────────────────
+    console.log('  [2] Admin login page accessible...');
+    const loginResp = await page.goto(
+        baseUrl.replace(/\/$/, '') + '/wp-admin/',
+        { waitUntil: 'domcontentloaded', timeout: 15000 }
+    );
+    // wp-admin redirects to /wp-login.php (302 → 200) — accept both
+    const finalUrl = page.url();
+    const status   = loginResp?.status() ?? 0;
+    assert(
+        status < 500 && (finalUrl.includes('wp-login') || finalUrl.includes('wp-admin')),
+        `Admin login page: HTTP ${status} at ${finalUrl}`
+    );
+    const loginBody = await page.content();
+    assert(
+        !/(?:Fatal error|Parse error)/i.test(loginBody),
+        'PHP fatal/parse error on admin login page'
+    );
+    console.log('  [2] PASSED');
+}
+
+async function runRepoSpecs(page, baseUrl) {
+    if (!REPO_DIR) return;
+    const e2eDir = path.join(REPO_DIR, '.loop-engineer', 'e2e');
+    if (!fs.existsSync(e2eDir)) {
+        console.log('  No per-repo specs (.loop-engineer/e2e/) — baseline only.');
+        return;
     }
-
-    // Smoke test: WordPress site loads (no PHP fatal errors)
-    const snapshot = await mcpCall('browser_snapshot', {});
-    const content = JSON.stringify(snapshot);
-
-    if (content.includes('Fatal error') || content.includes('Parse error')) {
-        console.error('PHP fatal error detected on WordPress front page.');
-        console.error(content.slice(0, 1000));
-        process.exit(1);
+    const specs = fs.readdirSync(e2eDir).filter(f => f.endsWith('.js')).sort();
+    if (specs.length === 0) {
+        console.log('  .loop-engineer/e2e/ has no .js files — baseline only.');
+        return;
     }
-
-    console.log('WordPress front page loads without fatal errors.');
-
-    // Per-repo E2E specs (optional)
-    const repoDir = process.env.REPO_DIR || '';
-    const fs = require('fs');
-    const path = require('path');
-    const e2eDir = path.join(repoDir, '.loop-engineer/e2e');
-
-    if (fs.existsSync(e2eDir)) {
-        const specs = fs.readdirSync(e2eDir).filter(f => f.endsWith('.js')).sort();
-        for (const spec of specs) {
-            console.log('Running repo E2E spec: ' + spec);
-            // Dynamically require per-repo specs
-            // Each spec should export async function run(mcpCall) and throw on failure
-            const mod = require(path.join(e2eDir, spec));
-            await mod.run(mcpCall);
-            console.log('  PASSED: ' + spec);
+    for (const spec of specs) {
+        console.log(`  Running repo spec: ${spec}`);
+        const mod = require(path.join(e2eDir, spec));
+        if (typeof mod.run !== 'function') {
+            throw new Error(`${spec}: must export async function run(page, baseUrl)`);
         }
-    } else {
-        console.log('No per-repo E2E specs found at .loop-engineer/e2e/ — smoke test only.');
+        await mod.run(page, baseUrl);
+        console.log(`  PASSED: ${spec}`);
     }
-
-    console.log('Browser E2E passed.');
 }
 
-smokeTest().catch((err) => {
-    console.error('E2E failed:', err.message);
+async function main() {
+    console.log('  Target:  ' + WP_TEST_URL);
+    console.log('  Browser: ' + CHROME_BIN);
+
+    const browser = await chromium.launch({
+        executablePath: CHROME_BIN,
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+        ],
+    });
+
+    try {
+        const page = await browser.newPage();
+        await runBaseline(page, WP_TEST_URL);
+        await runRepoSpecs(page, WP_TEST_URL);
+        console.log('Browser E2E passed.');
+    } finally {
+        await browser.close();
+    }
+}
+
+main().catch((err) => {
+    console.error('E2E FAILED:', err.message);
     process.exit(1);
 });

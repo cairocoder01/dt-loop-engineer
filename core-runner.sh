@@ -283,6 +283,42 @@ fi
 
 export AGENT_BRANCH
 
+# ── Verify helper ────────────────────────────────────────────────────────────
+# run_verify_script <path>
+#   Runs one verify script, captures its combined stdout+stderr to a temp file.
+#   On failure: appends the output to VERIFY_ERRORS_FILE under a section header
+#   and sets ALL_PASSED=false. On success: discards output (already logged).
+#   Always returns 0 so the caller can run all scripts before checking ALL_PASSED.
+run_verify_script() {
+    local verify_script="$1"
+    local SCRIPT_NAME SCRIPT_OUT SCRIPT_EXIT
+    SCRIPT_NAME=$(basename "$verify_script")
+    SCRIPT_EXIT=0
+    log "  Checking: $SCRIPT_NAME"
+
+    SCRIPT_OUT=$(mktemp)
+    if [[ "$verify_script" == *.sh ]]; then
+        bash "$verify_script" > "$SCRIPT_OUT" 2>&1 || SCRIPT_EXIT=$?
+    elif [[ "$verify_script" == *.js ]]; then
+        node "$verify_script" > "$SCRIPT_OUT" 2>&1 || SCRIPT_EXIT=$?
+    fi
+
+    if [[ $SCRIPT_EXIT -ne 0 ]]; then
+        log "  FAILED: $SCRIPT_NAME (exit $SCRIPT_EXIT)"
+        {
+            echo "### $SCRIPT_NAME (exit $SCRIPT_EXIT)"
+            cat "$SCRIPT_OUT"
+            echo ""
+        } >> "$VERIFY_ERRORS_FILE"
+        ALL_PASSED=false
+    else
+        log "  PASSED: $SCRIPT_NAME"
+    fi
+
+    rm -f "$SCRIPT_OUT"
+    return 0
+}
+
 # ── Recursive loop ───────────────────────────────────────────────────────────
 RETRIES=0
 
@@ -332,26 +368,25 @@ Human input is needed before the agent can continue. Update the issue with the r
     ALL_PASSED=true
     > "$VERIFY_ERRORS_FILE"
 
+    # Run all system verify scripts — do NOT stop on the first failure.
+    # Collecting every failing script's output in one pass gives the agent the
+    # full picture so it can fix everything in a single retry instead of one
+    # error class per iteration.
     for verify_script in "$SCRIPT_DIR/loop-stages/03_verify"/*; do
-        SCRIPT_NAME=$(basename "$verify_script")
-        log "  Checking: $SCRIPT_NAME"
-        SCRIPT_EXIT=0
-        if [[ "$verify_script" == *.sh ]]; then
-            bash "$verify_script" >> "$VERIFY_ERRORS_FILE" 2>&1 || SCRIPT_EXIT=$?
-        elif [[ "$verify_script" == *.js ]]; then
-            node "$verify_script" >> "$VERIFY_ERRORS_FILE" 2>&1 || SCRIPT_EXIT=$?
-        else
-            continue
-        fi
-
-        if [[ $SCRIPT_EXIT -ne 0 ]]; then
-            log "  FAILED: $SCRIPT_NAME (exit $SCRIPT_EXIT)"
-            { echo ""; echo "--- $SCRIPT_NAME failed (exit $SCRIPT_EXIT) ---"; } >> "$VERIFY_ERRORS_FILE"
-            ALL_PASSED=false
-            break
-        fi
-        log "  PASSED: $SCRIPT_NAME"
+        [[ "$verify_script" == *.sh || "$verify_script" == *.js ]] || continue
+        run_verify_script "$verify_script"
     done
+
+    # Per-repo verify scripts supplement (not replace) the system ones.
+    # A repo can ship additional checks in .loop-engineer/verify/*.sh|js.
+    REPO_VERIFY_DIR="$REPO_DIR/.loop-engineer/verify"
+    if [[ -d "$REPO_VERIFY_DIR" ]]; then
+        log "  Running per-repo verify scripts (.loop-engineer/verify/)..."
+        for verify_script in "$REPO_VERIFY_DIR"/*.sh "$REPO_VERIFY_DIR"/*.js; do
+            [[ -f "$verify_script" ]] || continue
+            run_verify_script "$verify_script"
+        done
+    fi
 
     if [[ "$ALL_PASSED" == "true" ]]; then
         log "All verify stages passed!"

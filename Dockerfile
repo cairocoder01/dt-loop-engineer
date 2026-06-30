@@ -34,8 +34,14 @@ RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cl
 # opencode CLI (AI agent runner)
 RUN npm install -g opencode-ai
 
-# Playwright MCP for browser automation
+# Playwright MCP for browser automation (used by opencode during stage 02)
 RUN npm install -g @playwright/mcp
+
+# Playwright Node.js library for the E2E verify stage (03_chrome_mcp_e2e.js).
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD skips the bundled browser download; we use
+# the system Chromium (installed above) via CHROME_BIN at runtime instead.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm install -g playwright
 
 # Browser env vars for Playwright/Puppeteer inside Alpine
 ENV CHROME_BIN=/usr/bin/chromium-browser
