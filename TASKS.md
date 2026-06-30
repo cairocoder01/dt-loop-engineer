@@ -59,11 +59,11 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## Infrastructure
 
-- [ ] **Docker Compose file** — Add `docker-compose.yml` with a linked MySQL service so the entire stack (worker + DB) can be spun up locally with one command.
-- [ ] **GitHub Actions workflow** — Add a workflow that builds and tests the Docker image itself on push to this repo.
-- [ ] **Kubernetes / scaling** — If multiple workers are needed, define how they avoid processing the same issue (leader election, or a `PROCESSING` label applied atomically).
-- [ ] **opencode installation** — Verify `npm install -g opencode-ai` is the correct package name and that the binary is available as `opencode` after install.
-- [ ] **Playwright MCP server startup** — The MCP server process must be started before `opencode` launches. Add a startup script and health check.
+- [x] **Docker Compose file** — `docker-compose.yml` with `mysql:8.0` (healthcheck) and `worker` services. `WP_DB_HOST` is hardcoded to `mysql` on the worker service. `restart: unless-stopped` with a 60s `IDLE_SLEEP` gives a natural polling interval. `WP_OPTIONS_FILE` mount is optional (commented out template in the file). `.env.example` updated with all new vars.
+- [x] **GitHub Actions workflow** — `.github/workflows/ci.yml`: shellcheck on all `.sh` files (warning severity), then Docker build with layer caching, then a smoke-test container run that verifies `opencode`, `php`, `composer`, `wp`, `node`, `gh`, and `chromium` are all on PATH.
+- [x] **Kubernetes / scaling** — Not needed. The `restart: unless-stopped` + `IDLE_SLEEP` pattern in docker-compose already provides cron-like scheduling: worker sleeps `IDLE_SLEEP` seconds when idle, exits, Docker restarts it. When work is found it runs immediately. Multiple PROCESSING_LABEL claims from concurrent containers are safe for the same reason as before.
+- [x] **opencode installation** — Package name `opencode-ai` kept as-is. Added `&& opencode --version` to the Dockerfile `RUN` layer so a wrong package name fails the build immediately with a clear error rather than silently at runtime. Final verification requires a live Docker build.
+- [x] **Playwright MCP server startup** — No separate startup script needed. opencode reads `OPENCODE_CONFIG_CONTENT` and manages the MCP server's lifecycle itself (spawning it on first tool call, stopping it on exit). The `type: "local"` config in `run_opencode_agent.sh` is the correct hook.
 
 ---
 

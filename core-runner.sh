@@ -186,6 +186,10 @@ PR_NUM=""
 DISCOVERED_ISSUE="[]"
 
 if ! discover_issue; then
+    # Sleep before exiting so that restart: unless-stopped in docker-compose
+    # produces a ~60s polling interval rather than a tight busy-loop.
+    IDLE_SLEEP="${IDLE_SLEEP:-60}"
+    [[ "$IDLE_SLEEP" -gt 0 ]] && sleep "$IDLE_SLEEP"
     exit 0
 fi
 

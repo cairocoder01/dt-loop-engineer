@@ -3,6 +3,7 @@ FROM alpine:3.19
 # Runtime dependencies: PHP 8.2, Node, Git, GitHub CLI, Chromium, Composer
 RUN apk add --no-cache \
     bash curl git jq \
+    unzip rsync \
     github-cli \
     nodejs npm \
     php82 \
@@ -32,7 +33,11 @@ RUN curl -sO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cl
     && mv wp-cli.phar /usr/local/bin/wp
 
 # opencode CLI (AI agent runner)
-RUN npm install -g opencode-ai
+# Package name: opencode-ai on npm (binary available as `opencode`).
+# If the build fails here with "opencode: not found", verify the package name
+# at https://www.npmjs.com/search?q=opencode before changing it.
+RUN npm install -g opencode-ai \
+    && opencode --version
 
 # Playwright MCP for browser automation (used by opencode during stage 02)
 RUN npm install -g @playwright/mcp

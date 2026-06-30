@@ -1,0 +1,81 @@
+services:
+
+  # ── MySQL test database ───────────────────────────────────────────────────────
+  # Used by the WordPress test suite (PHPUnit). The bootstrap hook installs
+  # the WP test library once; the pre-issue hook drops and recreates tables
+  # before each issue so tests always start from a clean state.
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${WP_DB_NAME}
+      MYSQL_USER: ${WP_DB_USER}
+      MYSQL_PASSWORD: ${WP_DB_PASS}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-uroot", "--password=${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Loop engineer worker ──────────────────────────────────────────────────────
+  # Scheduling model: the worker processes one issue per run, then exits.
+  #   - When work is found: runs immediately, exits 0, Docker restarts it.
+  #   - When idle: sleeps IDLE_SLEEP seconds (default 15 min), exits, Docker
+  #     restarts it. This gives a ~15-minute polling interval with no extra
+  #     scheduler service required.
+  # To run once (e.g. for testing): docker compose run --rm worker
+  worker:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      # ── GitHub ────────────────────────────────────────────────────────────────
+      GH_TOKEN: ${GH_TOKEN:?set GH_TOKEN in .env}
+      GITHUB_OWNER: ${GITHUB_OWNER:?set GITHUB_OWNER in .env}
+      TRIGGER_LABEL: ${TRIGGER_LABEL}
+      PROCESSING_LABEL: ${PROCESSING_LABEL}
+      WAITING_LABEL: ${WAITING_LABEL}
+      READY_LABEL: ${READY_LABEL}
+      MAX_LOOP_RETRIES: ${MAX_LOOP_RETRIES}
+
+      # ── AI provider ───────────────────────────────────────────────────────────
+      GEMINI_API_TOKEN: ${GEMINI_API_TOKEN:?set GEMINI_API_TOKEN in .env}
+      OPENCODE_MODEL: ${OPENCODE_MODEL}
+      AGENT_TIMEOUT: ${AGENT_TIMEOUT}
+
+      # ── WordPress test database ───────────────────────────────────────────────
+      # WP_DB_HOST is always "mysql" (the service above); not read from .env.
+      WP_DB_HOST: mysql
+      WP_DB_NAME: ${WP_DB_NAME}
+      WP_DB_USER: ${WP_DB_USER}
+      WP_DB_PASS: ${WP_DB_PASS}
+      WP_VERSION: ${WP_VERSION}
+
+      # ── Base WordPress theme ──────────────────────────────────────────────────
+      DT_BASE_THEME_REPO: ${DT_BASE_THEME_REPO}
+
+      # ── E2E verification ──────────────────────────────────────────────────────
+      # 02b_prep_e2e_site.sh starts a PHP server inside the container and serves
+      # the WordPress test install. WP_TEST_URL points 03_chrome_mcp_e2e.js at it.
+      WP_TEST_URL: ${WP_TEST_URL}
+      WP_E2E_PORT: ${WP_E2E_PORT}
+
+      # ── Optional: WordPress options secrets ───────────────────────────────────
+      # See .env.example for instructions on mounting a secrets file.
+      WP_OPTIONS_FILE: ${WP_OPTIONS_FILE}
+
+      # ── Polling interval ──────────────────────────────────────────────────────
+      IDLE_SLEEP: ${IDLE_SLEEP}
+
+    # Uncomment to mount a WordPress options secrets file:
+    # volumes:
+    #   - ${WP_OPTIONS_FILE_HOST_PATH}:/run/secrets/wp-options:ro
+
+volumes:
+  mysql_data:
