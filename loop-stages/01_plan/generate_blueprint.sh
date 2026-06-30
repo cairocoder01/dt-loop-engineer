@@ -28,7 +28,7 @@ CONTEXT_BUDGET=12000
 CONTEXT_USED=0
 REPO_CONTEXT=""
 
-for ctx_file in CLAUDE.md README.md .phpcs.xml phpunit.xml; do
+for ctx_file in AGENTS.md CLAUDE.md README.md .phpcs.xml phpunit.xml .editorconfig; do
     local_path="$REPO_DIR/$ctx_file"
     [[ -f "$local_path" ]] || continue
     remaining=$((CONTEXT_BUDGET - CONTEXT_USED))
@@ -53,16 +53,26 @@ done
 [[ -z "$REPO_CONTEXT" ]] && REPO_CONTEXT="(No context files found in repo root)"
 echo "  Total context: ${CONTEXT_USED} / ${CONTEXT_BUDGET} chars"
 
-# ── Coding standards (local override beats system fallback) ──────────────────
+# ── Coding standards (system always included; per-repo appended if present) ───
+# The system WP_STANDARDS.md covers all DT ecosystem rules. A repo's own
+# .loop-engineer/STANDARDS.md adds repo-specific rules on top — it does NOT
+# replace the system standards.
 LOCAL_STANDARDS="$REPO_DIR/.loop-engineer/STANDARDS.md"
 SYSTEM_STANDARDS="$SCRIPT_DIR/skills/WP_STANDARDS.md"
+
+STANDARDS=$(cat "$SYSTEM_STANDARDS" 2>/dev/null \
+    || echo "(No system standards file found — apply WordPress coding standards defaults)")
+echo "  Standards: system (skills/WP_STANDARDS.md)"
+
 if [[ -f "$LOCAL_STANDARDS" ]]; then
-    STANDARDS=$(cat "$LOCAL_STANDARDS")
-    echo "  Standards: local override (.loop-engineer/STANDARDS.md)"
-else
-    STANDARDS=$(cat "$SYSTEM_STANDARDS" 2>/dev/null \
-        || echo "(No standards file found — apply WordPress coding standards defaults)")
-    echo "  Standards: system fallback (skills/WP_STANDARDS.md)"
+    STANDARDS="${STANDARDS}
+
+---
+
+## Repo-Specific Standards (.loop-engineer/STANDARDS.md)
+
+$(cat "$LOCAL_STANDARDS")"
+    echo "  Standards: + repo-specific (.loop-engineer/STANDARDS.md)"
 fi
 
 # ── Issue/PR comments (last 5 from each, oldest→newest) ─────────────────────

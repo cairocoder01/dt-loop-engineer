@@ -69,8 +69,8 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## Skills / Standards
 
-- [ ] **`WP_STANDARDS.md` content** — Write the actual content: WordPress coding standards summary, DT-specific patterns (post type registration, field definitions, REST endpoints), test requirements, and what the agent must never do (e.g., don't drop DB tables, don't modify `functions.php` entry point).
-- [ ] **Per-repo skill overrides** — Design the convention for repos to ship their own agent instructions (a `.loop-engineer/STANDARDS.md`?) and how the runner discovers and injects them.
+- [x] **`WP_STANDARDS.md` content** — Comprehensive document incorporating patterns from both `disciple-tools-theme` and `disciple-tools-plugin-starter-template`: PHP standards (PHPCS, 4-space indent, naming), post type registration via `DT_Module_Base` + `dt_post_type_modules`, all field types and update formats, `DT_Posts` API, `list_posts()` query format, REST endpoint pattern, plugin main file pattern, directory layout, frontend (ESLint/Vite), PHPUnit multisite requirements, security rules, and a detailed "never do" list.
+- [x] **Per-repo skill overrides** — Convention: `.loop-engineer/STANDARDS.md` in the repo. Behavior changed from "replace" to "supplement": `generate_blueprint.sh` always loads `skills/WP_STANDARDS.md` first, then appends `.loop-engineer/STANDARDS.md` under a `## Repo-Specific Standards` heading if present. System standards always apply; per-repo rules add on top.
 
 ---
 

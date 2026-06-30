@@ -1,82 +1,158 @@
-# WordPress & Disciple.Tools Agent Standards
+# DT Agent Standards
 
-This document is the fallback engineering standard for the DT Loop Engineer agent. Repos that define their own `.loop-engineer/STANDARDS.md` will use that file instead.
+**PHP style, indentation, and project-specific patterns** are defined by the repo's own config files already provided in the Repository Context above — `AGENTS.md` / `CLAUDE.md`, `.phpcs.xml`, `.editorconfig`, and `phpunit.xml`. Those take precedence over anything in this document. This document covers only Disciple.Tools-specific APIs and non-negotiable rules that apply across every DT repo.
 
 ---
 
-## 1. PHP Coding Standards
+## 1. DT-Specific APIs
 
-- Follow [WordPress PHP Coding Standards](https://developer.wordpress.org/coding-standards/wordpress-coding-standards/php/)
-- 4-space indentation (no tabs)
-- All user-facing strings must be translatable: use `esc_html__()`, `esc_html_e()`, `__()`, `_e()` with text domain `disciple_tools`
-- Validate and sanitize all input at system boundaries; escape all output
-- Run PHPCS before considering a task complete
+### Post Type Registration
 
-## 2. Disciple.Tools Architecture Patterns
+All custom post types must extend `DT_Module_Base` and register via the `dt_post_type_modules` filter. Never register a custom post type outside this system.
 
-### Post Types
-- Custom post types extend `DT_Module_Base`
-- Register via the `dt_registered_post_types` filter
-- Fields are defined via the `dt_custom_fields_settings` filter
+```php
+add_filter( 'dt_post_type_modules', function( $modules ) {
+    $modules['my_module_base'] = [
+        'name'          => __( 'My Feature', 'my-text-domain' ),
+        'enabled'       => true,
+        'locked'        => true,
+        'prerequisites' => [ 'contacts_base' ],
+        'post_type'     => 'my_post_type',
+        'description'   => __( 'Description', 'my-text-domain' ),
+    ];
+    return $modules;
+}, 20, 1 );
+```
 
-### Supported Field Types
-`text`, `textarea`, `number`, `date`, `key_select`, `multi_select`, `tags`, `connection`, `location`, `user_select`, `communication_channel`
+### DT_Posts API
 
-### CRUD Operations
-Use `DT_Posts::create_post()`, `update_post()`, `get_post()`, `list_posts()` — do not write raw SQL for post operations.
+Use these methods for all post CRUD. Never write raw SQL for operations covered here.
 
-### REST API
-- Endpoints live under `/dt-posts/v2/{post_type}/` or `/dt/v1/` namespaces
-- All endpoints require authentication unless explicitly marked public
-- Use `DT_Posts` methods inside REST callbacks; do not bypass the abstraction layer
+```php
+DT_Posts::create_post( $post_type, $fields )
+DT_Posts::get_post( $post_type, $post_id )
+DT_Posts::update_post( $post_type, $post_id, $fields )
+DT_Posts::list_posts( $post_type, $query_array )
+DT_Posts::can_view( $post_type, $post_id )   // always check before returning data
+DT_Posts::can_create( $post_type )
+```
 
-### Key Files
-- `functions.php` — Entry point (do not modify the module loading block)
-- `dt-core/global-functions.php` — Utility functions available globally
-- `dt-posts/dt-posts.php` — Core CRUD (prefer extending over modifying)
-- `dt-core/configuration/class-roles.php` — User roles and capabilities
+### Field Value Formats (for create/update)
 
-## 3. JavaScript & Frontend
+These array shapes are DT-specific — the model will not know them from general WP knowledge.
 
-- ESLint + Prettier enforced
-- Do not use `_.` (lodash via underscore alias) — it conflicts
-- SCSS lives in `dt-assets/scss/`; compile via Vite (`npm run build`)
-- Web components come from `@disciple.tools/web-components`
+```php
+// key_select — pass the key directly
+$fields['status'] = 'active';
 
-## 4. Testing Requirements
+// multi_select / tags — values array; force_values=true replaces all existing
+$fields['milestones'] = [ 'values' => [ [ 'value' => 'key' ] ], 'force_values' => true ];
 
-- PHPUnit tests must run in WordPress multisite mode (`WP_MULTISITE=1`)
-- Do not mock the database in integration tests — hit a real WordPress test database
-- Test files belong in `tests/` following existing naming conventions
-- All new public functions need at least a basic unit test
+// connection — add or remove links to other posts
+$fields['groups'] = [ 'values' => [ [ 'value' => 123 ], [ 'value' => 456, 'delete' => true ] ] ];
 
-## 5. Security Rules (Non-Negotiable)
+// communication channel (phone, email, etc.)
+$fields['contact_phone'] = [ 'values' => [ [ 'value' => '555-1234', 'verified' => true ] ] ];
 
-- Never expose raw database errors to the client
-- Never store plaintext credentials or tokens in code
-- Never disable nonce verification on form submissions
-- Always check `current_user_can()` before mutating data in REST handlers
-- Sanitize with `sanitize_text_field()`, `absint()`, `wp_kses_post()` as appropriate
-- Escape output with `esc_html()`, `esc_attr()`, `esc_url()`, `wp_kses_post()`
+// date — YYYY-MM-DD string or Unix timestamp
+$fields['start_date'] = '2024-01-15';
 
-## 6. What the Agent Must Never Do
+// user_select — integer user ID
+$fields['assigned_to'] = $user_id;
+```
 
-- Drop database tables
-- Modify `functions.php` module-loading block
-- Remove or rename existing hooks without confirming no external plugins depend on them
-- Push directly to `main` or `develop` — all work goes on a feature branch
+### list_posts() Query Format
+
+```php
+DT_Posts::list_posts( 'contacts', [
+    'offset'         => 0,
+    'limit'          => 50,
+    'sort'           => '-last_modified',       // prefix - for descending
+    'overall_status' => [ 'active' ],           // match any of these keys
+    'milestones'     => [ '-key' ],             // NOT this key
+    'milestones'     => [ '*' ],                // has ANY value
+    'milestones'     => [],                     // has NO values
+    'assigned_to'    => [ 'me' ],              // current user
+    'last_modified'  => [ 'start' => '2024-01-01', 'end' => '2024-12-31' ],
+    'member_count'   => [ 'number' => 5, 'operator' => '>=' ],
+    'text'           => 'search term',
+] );
+```
+
+### Field Definition (dt_custom_fields_settings filter)
+
+```php
+$fields['my_field'] = [
+    'name'           => __( 'My Field', 'my-text-domain' ),
+    'type'           => 'key_select',  // text|textarea|number|date|key_select|multi_select|tags|connection|location|user_select|communication_channel
+    'tile'           => 'details',
+    'default'        => [ 'option_a' => [ 'label' => __( 'Option A', 'my-text-domain' ) ] ],
+    'customizable'   => false,
+    'in_create_form' => true,
+];
+```
+
+### REST Endpoints
+
+Always use this permission pattern — never `__return_true`.
+
+```php
+'permission_callback' => function() {
+    return current_user_can( 'access_contacts' ) || current_user_can( 'dt_all_access_contacts' );
+}
+```
+
+Plugin namespace: `/my-plugin-name/v1/`. Public (no-auth) endpoints only under `/dt-public/v1/` for magic link flows.
+
+### Useful DT Globals
+
+```php
+dt_write_log( $data );                  // debug logging (WP_DEBUG must be true)
+dt_is_rest();                           // bool — is this a REST request?
+dt_recursive_sanitize_array( $array );  // deep-sanitize an input array
+disciple_tools();                       // Disciple_Tools singleton instance
+```
+
+Activity hooks: `dt_post_update_fields`, `dt_post_created`, `post_connection_added`, `post_connection_removed`.
+
+---
+
+## 2. One-Line Rules
+
+- **PHP style:** Follow `.phpcs.xml` and `.editorconfig` in this repo — run `./tests/test_phpcs.sh` before marking complete.
+- **Escaping:** `esc_html()`, `esc_attr()`, `esc_url()` on every value touching HTML. No exceptions.
+- **Sanitizing:** `sanitize_text_field()`, `absint()`, or `dt_recursive_sanitize_array()` on all user input at REST/form boundaries.
+- **Translations:** Every user-facing string uses `__()` / `esc_html_e()` / `esc_html__()` with the repo's text domain.
+- **Frontend:** Run `npm run lint` and `npm run prettier` before marking complete.
+- **Tests:** `WP_MULTISITE=1 vendor/bin/phpunit`. Never mock the database in integration tests.
+
+---
+
+## 3. Never Do
+
+- Drop or alter existing database tables
+- Change an existing field's `type` or rename its key (stored in postmeta, requires migration)
+- Rename existing post type slugs (stored in `wp_posts.post_type`)
+- Remove or rename existing filter/action hooks
+- Modify the module-loading block in `functions.php`
+- Write raw SQL for any operation covered by `DT_Posts`
+- Use `__return_true` as a REST permission callback
+- Create functions or classes without a plugin/theme prefix
+- Modify files in `vendor/`, `node_modules/`, `dt-core/libraries/`, or `dt-core/dependencies/`
+- Remove existing PHPUnit tests — only add or update them
 - Commit `.env` files, credentials, or API keys
-- Remove existing PHPUnit tests (only add or update them)
 - Install new Composer or npm packages without noting them in the blueprint
 
-## 7. PR Readiness Checklist
+---
 
-Before marking `COMPLETE` in PROGRESS.md, confirm:
+## 4. PR Readiness Checklist
 
-- [ ] PHP syntax check passes (`php -l` on all modified files)
-- [ ] PHPCS passes with no errors
-- [ ] PHPUnit suite passes (multisite mode)
-- [ ] All user-facing strings are wrapped in translation functions
-- [ ] No hardcoded credentials or URLs
-- [ ] Output is escaped at every point it touches HTML
+Before writing `COMPLETE` in `PROGRESS.md`:
+
+- [ ] `php -l` passes on all modified PHP files
+- [ ] PHPCS passes (`./tests/test_phpcs.sh`)
+- [ ] `WP_MULTISITE=1 vendor/bin/phpunit` passes
+- [ ] All user-facing strings use translation functions with the correct text domain
+- [ ] All output is escaped; all user input is sanitized
 - [ ] REST endpoints check capabilities before mutating data
+- [ ] No hardcoded credentials, absolute paths, or magic strings
