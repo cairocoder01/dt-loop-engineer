@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$REPO_DIR"
 
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
-BASE_BRANCH="${BASE_BRANCH:-develop}"
+BASE_BRANCH="${BASE_BRANCH:-main}"   # core-runner.sh auto-detects and exports this
 PR_MODE="${PR_MODE:-false}"
 PR_NUM="${PR_NUM:-}"
 LOOP_ITERATIONS="${LOOP_ITERATIONS:-1}"

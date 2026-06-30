@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="$SCRIPT_DIR/state"
 REPO_DIR="$SCRIPT_DIR/repo"
-BASE_BRANCH="${BASE_BRANCH:-develop}"
+BASE_BRANCH="${BASE_BRANCH:-}"   # auto-detected after clone; override via env var
 
 log()  { echo "[$(date -u +%H:%M:%S)] $*"; }
 fail() { log "ERROR: $*"; exit 1; }
@@ -218,6 +218,20 @@ rm -rf "$REPO_DIR"
 log "Cloning $GITHUB_OWNER/$TARGET_REPO..."
 git clone "https://x-access-token:${GH_TOKEN}@github.com/$GITHUB_OWNER/$TARGET_REPO.git" "$REPO_DIR"
 cd "$REPO_DIR"
+
+# ── Detect base branch ───────────────────────────────────────────────────────
+# Prefer an explicit env var override; otherwise probe the remote in priority order.
+if [[ -z "$BASE_BRANCH" ]]; then
+    for candidate in develop main master; do
+        if git ls-remote --heads origin "$candidate" | grep -q .; then
+            BASE_BRANCH="$candidate"
+            break
+        fi
+    done
+    : "${BASE_BRANCH:=main}"  # ultimate fallback if none of the above exist
+fi
+log "Base branch: $BASE_BRANCH"
+export BASE_BRANCH
 
 # ── Run pre-issue hooks ──────────────────────────────────────────────────────
 log "Running pre-issue hooks..."
