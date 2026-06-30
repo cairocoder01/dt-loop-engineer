@@ -13,7 +13,7 @@ This file tracks what still needs to be designed, implemented, or decided before
     3. Oldest open issue with `TRIGGER_LABEL` (new work, sorted `createdAt asc`)
 - [x] **State persistence across container restarts** — `PROCESSING_LABEL` is applied atomically before any work begins and removed on all exit paths. Recovery mode: finds existing `agent/<issue-num>-*` branch, resumes from it; if no branch found, posts a detailed comment and escalates to `WAITING_LABEL`.
 - [x] **Secret injection strategy** — `WP_OPTIONS_FILE` env var (mounted into container) contains `KEY=VALUE` lines. `hooks/pre-issue/00_inject_wp_options.sh` reads the file and writes each entry to the test WordPress via `wp option update --allow-root`. See `.env.example` for mount pattern.
-- [ ] **Telemetry / observability** — Structured logging format TBD. Consider shipping logs to a webhook or S3 for post-mortem review.
+- [x] **Telemetry / observability** — Per-run log files. `core-runner.sh` tees all output (stdout + stderr from itself and every child stage script) to a timestamped file under `LOG_DIR` (`/var/log/loop-engineer` by default). The docker-compose volume mounts `./logs` to that path so files survive container restarts and are readable on the host. One file per container run, named `YYYYMMDD-HHMMSS.log`.
 
 ---
 

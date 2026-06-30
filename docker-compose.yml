@@ -74,13 +74,17 @@ services:
       # DRY_RUN=true runs all stages but skips git push, gh pr create, and label
       # mutations. Safe for local testing without polluting real issues/PRs.
       DRY_RUN: ${DRY_RUN}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS}
 
       # ── Polling interval ──────────────────────────────────────────────────────
       IDLE_SLEEP: ${IDLE_SLEEP}
 
-    # Uncomment to mount a WordPress options secrets file:
-    # volumes:
-    #   - ${WP_OPTIONS_FILE_HOST_PATH}:/run/secrets/wp-options:ro
+    volumes:
+      # Per-run log files written by core-runner.sh (one file per container run).
+      # Browse with: ls -lt logs/ | head  or  tail -f logs/<filename>
+      - ./logs:/var/log/loop-engineer
+      # Uncomment to mount a WordPress options secrets file:
+      # - ${WP_OPTIONS_FILE_HOST_PATH}:/run/secrets/wp-options:ro
 
 volumes:
   mysql_data:

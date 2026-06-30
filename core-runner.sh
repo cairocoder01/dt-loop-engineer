@@ -2,6 +2,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Per-run log file ──────────────────────────────────────────────────────────
+# All output (stdout + stderr from this script and every child stage) is tee'd
+# to a timestamped file under LOG_DIR. The compose volume mounts LOG_DIR to
+# ./logs on the host so files survive container restarts and can be read with
+# a normal text editor.
+LOG_DIR="${LOG_DIR:-/var/log/loop-engineer}"
+mkdir -p "$LOG_DIR"
+find "$LOG_DIR" -name "*.log" -mtime +"${LOG_RETENTION_DAYS:-30}" -delete 2>/dev/null || true
+LOG_FILE="$LOG_DIR/$(date -u +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "Log: $LOG_FILE"
 STATE_DIR="$SCRIPT_DIR/state"
 REPO_DIR="$SCRIPT_DIR/repo"
 BASE_BRANCH="${BASE_BRANCH:-}"   # auto-detected after clone; override via env var
