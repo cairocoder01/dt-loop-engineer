@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$REPO_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MODEL="${OPENCODE_MODEL:-gemini}"
+MODEL="${OPENCODE_MODEL:-google/gemini-3-flash-preview}"
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 QUESTIONS="$REPO_DIR/QUESTIONS.md"
 
@@ -241,14 +241,23 @@ Write the appropriate file now. Do not write any other files.
 PROMPT
 
 # ── Run opencode ──────────────────────────────────────────────────────────────
+# opencode uses provider-standard env vars for API keys; map GEMINI_API_TOKEN
+# to the name opencode's Google provider expects.
+export GOOGLE_API_KEY="${GEMINI_API_TOKEN:-}"
+
 echo "Invoking opencode planner ($MODEL)..."
 
-# TODO: confirm exact opencode CLI flags once CLI API is finalized
-opencode \
-    --agent "$MODEL" \
-    --token "$GEMINI_API_TOKEN" \
-    --workdir "$REPO_DIR" \
-    --prompt-file "$PROMPT_FILE" \
+# opencode run flags:
+#   --dir   working directory (NOT --workdir)
+#   --auto  auto-approve all permission prompts (required for unattended runs)
+#   --model provider/model format (e.g. google/gemini-2.0-flash)
+#   stdin   the prompt (no --prompt-file flag; pipe the file instead)
+# No MCP needed for the planning stage.
+opencode run \
+    --model "$MODEL" \
+    --dir "$REPO_DIR" \
+    --auto \
+    < "$PROMPT_FILE" \
     || true  # Don't fail here — check which output file was written instead
 
 # ── Validate BLUEPRINT.md sections ───────────────────────────────────────────

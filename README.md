@@ -144,7 +144,8 @@ The container boots, runs bootstrap hooks once, then enters the discovery-and-lo
 | `WP_INSTALL_PATH` | No | WordPress install path for WP-CLI (default: `/tmp/wordpress`) |
 | `WP_VERSION` | No | WordPress version to test against (default: `latest`) |
 | `BASE_BRANCH` | No | Branch PRs target (default: `develop`) |
-| `OPENCODE_MODEL` | No | Override opencode model (default: `gemini`) |
+| `OPENCODE_MODEL` | No | opencode model in `provider/model` format (default: `google/gemini-3-flash-preview`). Example alternates: `google/gemini-1.5-pro`, `anthropic/claude-3-5-sonnet-20241022` |
+| `AGENT_TIMEOUT` | No | Seconds before opencode is killed per iteration; `0` disables (default: `1800`) |
 
 ---
 

@@ -30,11 +30,11 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## `02_execute` — Agent Execution
 
-- [ ] **opencode invocation flags** — Confirm the exact CLI flags for `opencode` (model selection, MCP server binding, working directory, prompt injection). The CLI API may have changed from initial design.
-- [ ] **PROGRESS.md write discipline** — The agent must be prompted to maintain `PROGRESS.md`. Design the exact prompt language that reliably produces this behavior.
-- [ ] **Error context injection** — Define the exact format for appending `VERIFY_ERRORS.md` content to the re-run prompt so the agent understands it must fix the listed errors.
-- [ ] **File change scope limiting** — Prevent the agent from modifying files outside the repo being worked on (e.g., shared worktree artifacts, `/workspace/skills/`).
-- [ ] **Timeout handling** — What happens if `opencode` hangs? Add a timeout with `timeout` command and treat it as a blocked state.
+- [x] **opencode invocation flags** — Verified against `sst/opencode` source (`packages/opencode/src/cli/cmd/run.ts`) and official docs. Key corrections from initial scaffold: subcommand is `opencode run` (not bare `opencode`); working dir is `--dir` (not `--workdir`); prompt is piped via stdin (no `--prompt-file`); API key is `GOOGLE_API_KEY` env var (no `--token` flag); MCP servers are configured via `OPENCODE_CONFIG_CONTENT` JSON env var (no `--mcp-server` flag); `--auto` is required for unattended runs. Both stage scripts updated.
+- [x] **PROGRESS.md write discipline** — Prompt now requires: (1) write an opening status line before touching any file, (2) append after each major step for crash recovery, (3) terminal state must be exactly `BLOCKED: <reason>` or `COMPLETE` as the last line. Failure to write either causes core-runner.sh to treat the run as a crash.
+- [x] **Error context injection** — VERIFY_ERRORS.md is injected under a `## Previous Attempt: Verification Failures` heading with explicit instructions to fix every error before writing COMPLETE. The section distinguishes first-run from retry with an IS_RETRY flag.
+- [x] **File change scope limiting** — Two-layer enforcement: (1) prompt states the exact REPO_DIR path and forbids touching anything outside it; (2) after opencode exits, a `find /workspace -newer $SCOPE_SENTINEL` check warns if any files outside REPO_DIR were modified.
+- [x] **Timeout handling** — `AGENT_TIMEOUT` env var (default 1800s, set to 0 to disable) wraps opencode with the `timeout(1)` command. Exit code 124 (timeout killed) appends a `BLOCKED:` line to PROGRESS.md so core-runner.sh surfaces it as a human-input-needed state rather than a silent crash.
 
 ---
 
