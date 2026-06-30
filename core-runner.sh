@@ -391,6 +391,7 @@ Human input is needed before the agent can continue. Update the issue with the r
     if [[ "$ALL_PASSED" == "true" ]]; then
         log "All verify stages passed!"
         log "Stage 04: Delivering..."
+        export LOOP_ITERATIONS=$((RETRIES + 1))
         bash "$SCRIPT_DIR/loop-stages/04_deliver/open_github_pr.sh"
         # PROCESSING_LABEL removal and READY_LABEL application happen inside the deliver script
         exit 0

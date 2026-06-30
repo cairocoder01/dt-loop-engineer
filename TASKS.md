@@ -50,10 +50,10 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## `04_deliver` — PR Creation
 
-- [ ] **PR title / body template** — Finalize the PR description format. Should it include the full `BLUEPRINT.md`, a summary, loop iteration count, and verify pass evidence?
-- [ ] **Commit authorship** — Set a consistent git author name/email for agent commits so they're identifiable in git history.
-- [ ] **Branch naming collisions** — If the agent retries and a branch already exists, `git push` will fail. Handle by appending a retry counter or force-pushing.
-- [ ] **Draft vs ready PR** — Should the PR always open as draft for human review, or ready if confidence is high?
+- [x] **PR title / body template** — Title: `[Agent] $ISSUE_TITLE`. Body: metadata table (issue, model, iteration count, branch), checklist of passing verify scripts, collapsible `<details>` for the full Blueprint. PR mode (fixing an existing PR) posts a comment with the same checklist instead of opening a new PR.
+- [x] **Commit authorship** — `git config user.email "loop-engineer[bot]@disciple.tools"` / `user.name "DT Loop Engineer"` set locally in the cloned repo before commit. Agent commits are identifiable in git log and blame without touching global git config.
+- [x] **Branch naming collisions** — `git fetch origin "$AGENT_BRANCH" 2>/dev/null || true` before every push updates the local tracking ref; `git push --force-with-lease` then succeeds when overwriting our own previous push (retry path) and fails safely if someone else pushed to the branch in the meantime.
+- [x] **Draft vs ready PR** — Always ready (no `--draft` flag). All checks passing means the work is complete and the PR is ready for human review — that's exactly what "ready for review" signals in GitHub. Draft means work-in-progress, which is the opposite of what the agent has produced.
 
 ---
 
