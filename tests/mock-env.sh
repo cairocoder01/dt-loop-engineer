@@ -11,7 +11,8 @@
 # Set DRY_RUN=true (the default here) so no actual GitHub writes happen.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+export ROOT_DIR
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 export GH_TOKEN="${GH_TOKEN:-mock_gh_token_replace_before_real_run}"
