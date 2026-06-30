@@ -291,8 +291,24 @@ while [[ $RETRIES -lt $MAX_LOOP_RETRIES ]]; do
 
     # Stage 01: Plan
     log "Stage 01: Generating blueprint..."
-    node "$SCRIPT_DIR/loop-stages/01_plan/generate_blueprint.js" \
-        || fail "Blueprint generation failed"
+    PLAN_EXIT=0
+    bash "$SCRIPT_DIR/loop-stages/01_plan/generate_blueprint.sh" || PLAN_EXIT=$?
+
+    if [[ $PLAN_EXIT -eq 2 ]]; then
+        # Planner wrote QUESTIONS.md — needs human decision before work can begin
+        QUESTIONS_CONTENT=$(cat "$REPO_DIR/QUESTIONS.md" 2>/dev/null \
+            || echo "(No questions file found — check container logs)")
+        log "Planner requires clarification. Posting questions and waiting."
+        post_comment "**Agent needs clarification before planning can begin.**
+
+$QUESTIONS_CONTENT
+
+Please answer the questions above, then re-apply the \`$TRIGGER_LABEL\` label to resume."
+        cleanup_processing_label "$WAITING_LABEL"
+        exit 0
+    fi
+
+    [[ $PLAN_EXIT -ne 0 ]] && fail "Blueprint generation failed (exit $PLAN_EXIT)"
 
     # Stage 02: Execute
     log "Stage 02: Running agent..."

@@ -9,6 +9,6 @@ git checkout -- .
 git clean -fd
 
 # Remove any leftover loop artifacts from a prior run
-rm -f BLUEPRINT.md PROGRESS.md VERIFY_ERRORS.md
+rm -f BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md
 
 echo "Worktree clean."

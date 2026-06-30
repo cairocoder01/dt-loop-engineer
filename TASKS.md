@@ -19,10 +19,12 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## `01_plan` — Blueprint Generation
 
-- [ ] **Finalize Gemini prompt template** — The system prompt in `generate_blueprint.js` needs to be tuned. What constraints force the model to output a machine-parseable `BLUEPRINT.md` structure?
-- [ ] **Blueprint schema validation** — After generation, validate that `BLUEPRINT.md` contains required sections (Task, Files, Acceptance Criteria). Fail fast with a GitHub issue comment if malformed.
-- [ ] **Context window management** — Large repos may have `CLAUDE.md` / `README.md` files that exceed token limits. Add truncation or summarization logic.
-- [ ] **Repo context discovery** — What additional context files should be fed to the planner? (e.g., `composer.json` deps, recent git log, open PRs referencing the same files)
+- [x] **Consistent model across stages** — Stage 01 now uses the opencode harness (same `OPENCODE_MODEL` var as stage 02). No direct Gemini API calls. Both stages change together when the model is swapped.
+- [x] **Planner clarification flow** — If the issue is ambiguous, opencode writes `QUESTIONS.md` instead of `BLUEPRINT.md` (exit 2). `core-runner.sh` catches this, posts the questions as a comment on the issue/PR, applies `WAITING_LABEL`, and exits. Human answers and re-applies `TRIGGER_LABEL` to resume.
+- [x] **Finalize opencode prompt for planning** — Prompt uses a clear decision tree (BLUEPRINT vs QUESTIONS), names the exact section headers the validator expects, and includes a concrete DT-specific few-shot example so the model produces consistent structure.
+- [x] **Blueprint schema validation** — After opencode exits, `generate_blueprint.sh` greps for all five `### ` headers. If any are missing it dumps the file and exits 1, which `core-runner.sh` treats as a hard failure (causing a retry or escalation).
+- [x] **Context window management** — 12,000-char total budget allocated in priority order (CLAUDE.md → README.md → .phpcs.xml → phpunit.xml). Each file reports actual vs available bytes; files beyond the budget are skipped with a log line.
+- [x] **Issue comment ingestion** — `generate_blueprint.sh` fetches the last 5 comments from the issue via `gh issue view --json comments` on every run (not just recovery), and additionally fetches the last 5 PR comments when `PR_MODE=true`. Both are appended to the prompt so the human's answers to prior questions are always visible to the planner.
 
 ---
 

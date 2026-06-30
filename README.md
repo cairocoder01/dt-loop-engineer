@@ -64,7 +64,7 @@ dt-loop-engineer/
 │
 ├── loop-stages/                     # Recursive execution stages
 │   ├── 01_plan/
-│   │   └── generate_blueprint.js    # Gemini: analyze issue → structured plan
+│   │   └── generate_blueprint.sh    # opencode: analyze issue → BLUEPRINT.md or QUESTIONS.md
 │   ├── 02_execute/
 │   │   └── run_opencode_agent.sh    # opencode CLI with MCP bindings
 │   ├── 03_verify/                   # All must exit 0 to proceed
@@ -152,12 +152,18 @@ The container boots, runs bootstrap hooks once, then enters the discovery-and-lo
 
 ### `01_plan` — Blueprint Generation
 
-`generate_blueprint.js` calls the Gemini API with:
+`generate_blueprint.sh` runs opencode with:
 - The full GitHub issue body
-- The repo's `CLAUDE.md` / `README.md` as context
-- The `skills/WP_STANDARDS.md` as coding constraints
+- The repo's `CLAUDE.md` / `README.md` as context (truncated to fit)
+- The `skills/WP_STANDARDS.md` as coding constraints (or local `.loop-engineer/STANDARDS.md` if present)
 
-It writes a structured `BLUEPRINT.md` to the repo root. The blueprint contains: task decomposition, files to modify, acceptance criteria, and edge cases. This file is the agent's primary instruction set for the execute stage.
+The model is configured via `OPENCODE_MODEL` — the same variable used by stage 02, so changing it affects both stages consistently.
+
+The planner writes exactly one of two files:
+
+**`BLUEPRINT.md`** — when the issue is clear enough to plan. Contains: task summary, files to modify, numbered implementation steps, acceptance criteria, and edge cases. This is the agent's primary instruction set for stage 02.
+
+**`QUESTIONS.md`** — when the issue is ambiguous or a human decision is required before implementation can begin (e.g., which field type to use, which post type to target, which of two valid approaches to take). The runner reads this file, posts the questions as a comment on the issue or PR, applies `WAITING_LABEL`, and exits. The human answers in the thread and re-applies `TRIGGER_LABEL` to resume.
 
 ### `02_execute` — Agent Execution
 

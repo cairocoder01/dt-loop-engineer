@@ -21,7 +21,7 @@ git config user.name  "DT Loop Engineer"
 
 # Stage all changes (excluding loop artifacts)
 git add --all
-git reset HEAD -- BLUEPRINT.md PROGRESS.md VERIFY_ERRORS.md 2>/dev/null || true
+git reset HEAD -- BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md 2>/dev/null || true
 
 STAGED=$(git diff --cached --name-only)
 if [[ -z "$STAGED" ]]; then
