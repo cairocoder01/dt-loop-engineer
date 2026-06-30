@@ -9,7 +9,6 @@ set -euo pipefail
 
 cd "$REPO_DIR"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 VERIFY_ERRORS="$REPO_DIR/VERIFY_ERRORS.md"
 PROGRESS="$REPO_DIR/PROGRESS.md"

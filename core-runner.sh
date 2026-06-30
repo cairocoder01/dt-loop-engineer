@@ -406,7 +406,7 @@ Human input is needed before the agent can continue. Update the issue with the r
     # Stage 03: Verify
     log "Stage 03: Running verification..."
     ALL_PASSED=true
-    > "$VERIFY_ERRORS_FILE"
+    : > "$VERIFY_ERRORS_FILE"
 
     # Run all system verify scripts — do NOT stop on the first failure.
     # Collecting every failing script's output in one pass gives the agent the

@@ -17,7 +17,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-FIXTURE_REPO="$SCRIPT_DIR/fixtures/sample-repo"
 FILTER="${1:-all}"
 PASS=0
 FAIL=0
@@ -79,7 +78,6 @@ Add a baptism_date date field to the Contact post type.
 - Do not modify functions.php.
 EOF
 
-    local validate_script="$ROOT_DIR/loop-stages/01_plan/generate_blueprint.sh"
     # Source just the validation section by checking for required headers manually
     local missing=0
     for section in "### Task Summary" "### Files to Modify" "### Implementation Plan" "### Acceptance Criteria" "### Edge Cases & Constraints"; do
@@ -151,7 +149,6 @@ run_secret_tests() {
 
     # Test C: short values (< 10 chars) are not scanned (too many false positives)
     local short_val="wp"   # WP_DB_PASS default
-    local content_with_short="<?php\n\$dbpass = 'wp';\n"
     # Short values should be skipped (the scanner has a length guard)
     if [[ ${#short_val} -lt 10 ]]; then
         pass "short value skipped by scanner (length guard correct)"

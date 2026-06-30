@@ -53,7 +53,7 @@ if [[ -z "$CONTENT_TYPE" ]]; then
     if grep -q "^Theme Name:" "$REPO_DIR/style.css" 2>/dev/null; then
         CONTENT_TYPE="themes"
     elif find "$REPO_DIR" -maxdepth 1 -name "*.php" \
-             | xargs grep -l "Plugin Name:" 2>/dev/null \
+             -exec grep -l "Plugin Name:" {} + 2>/dev/null \
              | grep -q .; then
         CONTENT_TYPE="plugins"
     fi
@@ -172,7 +172,7 @@ disown
 
 # Wait up to 20s for the server to respond
 READY=false
-for i in $(seq 1 20); do
+for _ in $(seq 1 20); do
     if curl -sf --max-time 2 "http://localhost:${WP_E2E_PORT}/" >/dev/null 2>&1; then
         READY=true
         break
