@@ -70,6 +70,11 @@ services:
       # See .env.example for instructions on mounting a secrets file.
       WP_OPTIONS_FILE: ${WP_OPTIONS_FILE}
 
+      # ── Dry-run / testing ────────────────────────────────────────────────────
+      # DRY_RUN=true runs all stages but skips git push, gh pr create, and label
+      # mutations. Safe for local testing without polluting real issues/PRs.
+      DRY_RUN: ${DRY_RUN}
+
       # ── Polling interval ──────────────────────────────────────────────────────
       IDLE_SLEEP: ${IDLE_SLEEP}
 

@@ -36,6 +36,10 @@ fi
 
 post_comment() {
     local body="$1"
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        log "[DRY-RUN] comment suppressed (${#body} chars): ${body:0:80}..."
+        return 0
+    fi
     if [[ "$PR_MODE" == "true" ]]; then
         gh pr comment "$PR_NUM" --repo "$GITHUB_OWNER/$TARGET_REPO" --body "$body"
     else
@@ -47,6 +51,10 @@ post_comment() {
 apply_labels() {
     local add_label="${1:-}"
     local remove_label="${2:-}"
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        log "[DRY-RUN] labels skipped: add='${add_label:-}' remove='${remove_label:-}'"
+        return 0
+    fi
     if [[ "$PR_MODE" == "true" ]]; then
         [[ -n "$add_label" ]]    && gh pr edit "$PR_NUM"    --repo "$GITHUB_OWNER/$TARGET_REPO" --add-label    "$add_label"    2>/dev/null || true
         [[ -n "$remove_label" ]] && gh pr edit "$PR_NUM"    --repo "$GITHUB_OWNER/$TARGET_REPO" --remove-label "$remove_label" 2>/dev/null || true
@@ -220,7 +228,9 @@ fi
 # ── Clone repo ───────────────────────────────────────────────────────────────
 rm -rf "$REPO_DIR"
 log "Cloning $GITHUB_OWNER/$TARGET_REPO..."
-git clone "https://x-access-token:${GH_TOKEN}@github.com/$GITHUB_OWNER/$TARGET_REPO.git" "$REPO_DIR"
+# Use plain HTTPS — gh auth login configured the credential helper, so the token
+# is injected transparently without appearing in the remote URL or process list.
+git clone "https://github.com/$GITHUB_OWNER/$TARGET_REPO.git" "$REPO_DIR"
 cd "$REPO_DIR"
 
 # ── Detect base branch ───────────────────────────────────────────────────────

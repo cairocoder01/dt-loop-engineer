@@ -19,6 +19,17 @@ jobs:
           find . -name "*.sh" -not -path "./.git/*" \
             | xargs shellcheck --severity=warning
 
+  # ── Fixture tests (no credentials needed) ──────────────────────────────────
+  fixture-tests:
+    name: Fixture tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run fixture test suite
+        run: |
+          chmod +x tests/run_fixture_test.sh tests/run_stage.sh tests/mock-env.sh
+          ./tests/run_fixture_test.sh
+
   # ── Docker image build ──────────────────────────────────────────────────────
   docker-build:
     name: Docker build

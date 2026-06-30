@@ -39,6 +39,24 @@ if [[ -z "$STAGED" ]]; then
     [[ "$PR_MODE" == "false" ]] && exit 1
 fi
 
+# ── Secret scan ───────────────────────────────────────────────────────────────
+# Guard against prompt injection attacks that instruct the agent to embed the
+# container's actual secret values into committed files. Checks exact token values
+# (not patterns) — short/mock values (< 10 chars) are skipped to avoid noise.
+if [[ -n "$STAGED" ]]; then
+    STAGED_DIFF=$(git diff --cached 2>/dev/null || true)
+    for secret_var in GH_TOKEN GEMINI_API_TOKEN; do
+        secret_val="${!secret_var:-}"
+        [[ ${#secret_val} -lt 10 ]] && continue
+        if echo "$STAGED_DIFF" | grep -qF "$secret_val"; then
+            echo "ERROR: Secret scan: value of \$${secret_var} found in staged diff."
+            echo "This may be a prompt injection attack. Aborting. Review: git diff --cached"
+            git reset HEAD -- . 2>/dev/null || true
+            exit 1
+        fi
+    done
+fi
+
 if [[ -n "$STAGED" ]]; then
     echo "Committing:"
     echo "$STAGED"
@@ -115,6 +133,22 @@ ${BLUEPRINT_CONTENT}
 > This PR was opened automatically by the agent and is ready for human review.
 PREOF
 )"
+
+# ── Dry-run: skip all GitHub write operations ────────────────────────────────
+if [[ "${DRY_RUN:-false}" == "true" ]]; then
+    echo "[DRY-RUN] Skipping: git push, PR creation/update, and label mutations."
+    echo "[DRY-RUN] Staged files that would have been committed:"
+    git diff --cached --name-only || echo "  (none staged)"
+    if [[ "$PR_MODE" == "false" ]]; then
+        echo "[DRY-RUN] Would open PR: [Agent] $ISSUE_TITLE → $BASE_BRANCH"
+        echo "[DRY-RUN] PR body preview (first 15 lines):"
+        echo "$PR_BODY" | head -15
+    else
+        echo "[DRY-RUN] Would update existing PR #$PR_NUM"
+    fi
+    echo "[DRY-RUN] Done — no remote changes made."
+    exit 0
+fi
 
 if [[ "$PR_MODE" == "true" ]]; then
     # ── PR mode: update the existing PR ──────────────────────────────────────

@@ -1,0 +1,9 @@
+{
+  "number": 42,
+  "title": "Add baptism date field to Contact post type",
+  "url": "https://github.com/cairocoder01/my-test-plugin/issues/42",
+  "body": "## Summary\n\nWe need to track the date a contact was baptized. Add a `baptism_date` date field to the Contact post type.\n\n## Requirements\n\n- Field type: `date`\n- Field key: `baptism_date`\n- Display name: \"Baptism Date\"\n- Show in the milestone tile on the Contact detail page\n- Field should be filterable via `list_posts()` date range queries\n- Empty value should display as blank (not an error)\n- Label must use the `disciple_tools` text domain\n\n## Files likely affected\n\n- `dt-contacts/contacts-post-type.php` — register field via `dt_custom_fields_settings`\n- `dt-contacts/contacts.php` — add field to the milestone tile template\n\n## Acceptance criteria\n\n- [ ] PHP lint passes with no errors on modified files\n- [ ] PHPCS reports no violations\n- [ ] PHPUnit multisite suite passes\n- [ ] `baptism_date` appears in Contact detail view milestone tile\n- [ ] Date value can be set and retrieved via `DT_Posts::update_post()` and `DT_Posts::get_post()`\n",
+  "repository": {
+    "name": "my-test-plugin"
+  }
+}
