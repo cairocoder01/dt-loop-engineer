@@ -130,15 +130,18 @@ The container boots, runs bootstrap hooks once, then enters the discovery-and-lo
 |---|---|---|
 | `GEMINI_API_TOKEN` | Yes | Google AI Studio API key |
 | `GH_TOKEN` | Yes | GitHub PAT for issue/PR mutation |
-| `GITHUB_OWNER` | Yes | GitHub org or username (e.g. `DiscipleTools`) |
-| `TRIGGER_LABEL` | Yes | Issue label to pick up (e.g. `agent-build`) |
-| `WAITING_LABEL` | Yes | Label when agent needs human input (e.g. `agent-waiting-for-human`) |
+| `GITHUB_OWNER` | Yes | GitHub org or username (e.g. `cairocoder01`) |
+| `TRIGGER_LABEL` | Yes | Issue label to pick up (e.g. `dt-agent-build`) |
+| `PROCESSING_LABEL` | Yes | Applied immediately on pickup to prevent double-processing (e.g. `dt-agent-processing`) |
+| `WAITING_LABEL` | Yes | Label when agent needs human input (e.g. `dt-agent-waiting-for-human`) |
 | `READY_LABEL` | Yes | Label on successful delivery (e.g. `ready-for-human-review`) |
 | `MAX_LOOP_RETRIES` | Yes | Max recursive iterations per issue (e.g. `5`) |
 | `WP_DB_HOST` | Yes | MySQL host for test suite |
 | `WP_DB_NAME` | Yes | MySQL database name |
 | `WP_DB_USER` | Yes | MySQL user |
 | `WP_DB_PASS` | Yes | MySQL password |
+| `WP_OPTIONS_FILE` | No | Path (in container) to a `KEY=VALUE` secrets file written to wp_options before each issue |
+| `WP_INSTALL_PATH` | No | WordPress install path for WP-CLI (default: `/tmp/wordpress`) |
 | `WP_VERSION` | No | WordPress version to test against (default: `latest`) |
 | `BASE_BRANCH` | No | Branch PRs target (default: `develop`) |
 | `OPENCODE_MODEL` | No | Override opencode model (default: `gemini`) |
@@ -204,6 +207,22 @@ The container runs a headless Chromium instance and exposes it via `@playwright/
 The WordPress instance accessible during tests is stood up via WP-CLI against the test database configured in `WP_DB_*` variables.
 
 ---
+
+## Issue Label Lifecycle
+
+```
+[TRIGGER_LABEL]
+      │  Worker picks up the issue
+      ▼
+[PROCESSING_LABEL]          ← applied atomically before any work begins
+      │
+      ├─ agent blocked    → [WAITING_LABEL]  (human must re-apply TRIGGER_LABEL)
+      ├─ max retries      → [WAITING_LABEL]  (human must review + re-apply TRIGGER_LABEL)
+      ├─ recovery failed  → [WAITING_LABEL]
+      └─ success          → [READY_LABEL]    (PR opened)
+```
+
+A container run that finds `PROCESSING_LABEL` on an issue knows the previous run was interrupted. It enters recovery mode: finds the existing agent branch, resumes the loop from where it left off, and posts a comment explaining what it found.
 
 ## PROGRESS.md Protocol
 

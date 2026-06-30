@@ -6,17 +6,13 @@ This file tracks what still needs to be designed, implemented, or decided before
 
 ## Architecture / Design
 
-- [ ] **Multi-issue concurrency model** — Should one container process multiple issues in parallel (one worktree per issue), or should it be strictly sequential? Sequential is safe but slow. Parallel requires careful DB isolation per worktree.
-    - A container should only handle a single issue at a time
-- [ ] **Issue prioritization** — Currently picks `.[0]` from the GitHub search result. Define a priority ordering (e.g., by label age, by repo, by assignee).
-    - Oldest issue with tag
-    - If a PR exists with the given label, the outstanding PR should take highest priority
-- [ ] **State persistence across container restarts** — If the container crashes mid-loop, the issue stays labeled with `TRIGGER_LABEL` and will be re-picked. Is that safe? Should a `PROCESSING` label be applied immediately on pickup?
-    - There should be a label indicating the agent has picked it up and started working on it.
-    - That processing indicator should take highest priority in the next container run
-    - The next run should try to identify the last failure. If unable to, it should apply the label needing human review with as much detail about the failure as possible in an issue comment.
-- [ ] **Secret injection strategy** — How are per-repo secrets (e.g., a plugin's own API keys needed for tests) provided to the agent? Options: mount a secrets volume, pull from a vault, encode in the issue body.
-    - There should be a way that certain values can be written to wp_options. The WP CLI has a way to do that. Is there a way with a special ENV file that it can be done?
+- [x] **Multi-issue concurrency model** — One issue per container, strictly sequential. Safe by design; no DB isolation complexity needed.
+- [x] **Issue prioritization** — 3-tier discovery in `core-runner.sh`:
+    1. Issues with `PROCESSING_LABEL` (recovery — highest priority)
+    2. Open PRs with `TRIGGER_LABEL` (existing work needs fixing)
+    3. Oldest open issue with `TRIGGER_LABEL` (new work, sorted `createdAt asc`)
+- [x] **State persistence across container restarts** — `PROCESSING_LABEL` is applied atomically before any work begins and removed on all exit paths. Recovery mode: finds existing `agent/<issue-num>-*` branch, resumes from it; if no branch found, posts a detailed comment and escalates to `WAITING_LABEL`.
+- [x] **Secret injection strategy** — `WP_OPTIONS_FILE` env var (mounted into container) contains `KEY=VALUE` lines. `hooks/pre-issue/00_inject_wp_options.sh` reads the file and writes each entry to the test WordPress via `wp option update --allow-root`. See `.env.example` for mount pattern.
 - [ ] **Telemetry / observability** — Structured logging format TBD. Consider shipping logs to a webhook or S3 for post-mortem review.
 
 ---
