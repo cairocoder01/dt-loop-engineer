@@ -120,10 +120,11 @@ Do not write COMPLETE unless you have verified every item in the Acceptance Crit
 } > "$PROGRESS"
 
 # ── API key mapping ───────────────────────────────────────────────────────────
-# opencode uses provider-standard env vars. Map our GEMINI_API_TOKEN to the
-# name opencode's Google provider expects. Other providers (Anthropic, OpenAI)
-# use ANTHROPIC_API_KEY / OPENAI_API_KEY and would need similar mapping here.
-export GOOGLE_API_KEY="${GEMINI_API_TOKEN:-}"
+export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN:-}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=../lib/opencode_runner.sh
+source "$SCRIPT_DIR/loop-stages/lib/opencode_runner.sh"
 
 # ── MCP configuration ─────────────────────────────────────────────────────────
 # MCP servers are configured via OPENCODE_CONFIG_CONTENT (inline JSON); there
@@ -142,7 +143,7 @@ OPENCODE_CONFIG_CONTENT=$(jq -n \
     }')
 
 # ── Write prompt to temp file and create scope sentinel ──────────────────────
-PROMPT_FILE=$(mktemp /tmp/loop-prompt.XXXXXX.md)
+PROMPT_FILE=$(mktemp /tmp/loop-prompt.XXXXXX)
 SCOPE_SENTINEL=$(mktemp /tmp/loop-scope-sentinel.XXXXXX)
 trap 'rm -f "$PROMPT_FILE" "$SCOPE_SENTINEL"' EXIT
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
@@ -150,29 +151,10 @@ printf '%s' "$PROMPT" > "$PROMPT_FILE"
 echo "Invoking opencode agent ($MODEL)${IS_RETRY:+ [retry]}..."
 [[ "${AGENT_TIMEOUT:-0}" -gt 0 ]] && echo "  Timeout: ${AGENT_TIMEOUT}s"
 
-# ── Run opencode ──────────────────────────────────────────────────────────────
-# opencode run:
-#   --dir   sets the working directory (equivalent of --workdir in other tools)
-#   --auto  auto-approves all permission prompts (required for unattended runs)
-#   --model provider/model format, e.g. google/gemini-2.0-flash
-#   stdin   the prompt (opencode run reads the prompt from stdin)
-AGENT_EXIT=0
-if [[ "${AGENT_TIMEOUT:-0}" -gt 0 ]]; then
-    timeout "$AGENT_TIMEOUT" \
-        opencode run \
-            --model "$MODEL" \
-            --dir "$REPO_DIR" \
-            --auto \
-            < "$PROMPT_FILE" \
-        || AGENT_EXIT=$?
-else
-    opencode run \
-        --model "$MODEL" \
-        --dir "$REPO_DIR" \
-        --auto \
-        < "$PROMPT_FILE" \
-        || AGENT_EXIT=$?
-fi
+# ── Run opencode (with model fallback on rate-limit) ──────────────────────────
+opencode_with_fallback "$MODEL" "$REPO_DIR" "$PROMPT_FILE" "${AGENT_TIMEOUT:-0}"
+AGENT_EXIT=$OPENCODE_LAST_EXIT
+[[ "$OPENCODE_USED_MODEL" != "$MODEL" ]] && echo "  (completed on fallback model: $OPENCODE_USED_MODEL)"
 
 # ── Timeout guard ─────────────────────────────────────────────────────────────
 # timeout(1) exits 124 when the child is killed for exceeding the deadline.

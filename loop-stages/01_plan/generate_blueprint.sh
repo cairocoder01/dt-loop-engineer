@@ -14,6 +14,7 @@ cd "$REPO_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODEL="${OPENCODE_MODEL:-google/gemini-3-flash-preview}"
+PLAN_TIMEOUT="${PLAN_TIMEOUT:-${AGENT_TIMEOUT:-1200}}"  # default 20 min; inherits AGENT_TIMEOUT if set
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 QUESTIONS="$REPO_DIR/QUESTIONS.md"
 
@@ -112,7 +113,7 @@ ${pr_comments}
 fi
 
 # ── Planning prompt ───────────────────────────────────────────────────────────
-PROMPT_FILE=$(mktemp /tmp/loop-plan-prompt.XXXXXX.md)
+PROMPT_FILE=$(mktemp /tmp/loop-plan-prompt.XXXXXX)
 trap 'rm -f "$PROMPT_FILE"' EXIT
 
 # Use a variable for triple-backtick to avoid heredoc command-substitution
@@ -264,24 +265,15 @@ Write the appropriate file now. Do not write any other files.
 PROMPT
 
 # ── Run opencode ──────────────────────────────────────────────────────────────
-# opencode uses provider-standard env vars for API keys; map GEMINI_API_TOKEN
-# to the name opencode's Google provider expects.
-export GOOGLE_API_KEY="${GEMINI_API_TOKEN:-}"
+export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN:-}"
+
+# shellcheck source=../lib/opencode_runner.sh
+source "$SCRIPT_DIR/loop-stages/lib/opencode_runner.sh"
 
 echo "Invoking opencode planner ($MODEL)..."
-
-# opencode run flags:
-#   --dir   working directory (NOT --workdir)
-#   --auto  auto-approve all permission prompts (required for unattended runs)
-#   --model provider/model format (e.g. google/gemini-2.0-flash)
-#   stdin   the prompt (no --prompt-file flag; pipe the file instead)
-# No MCP needed for the planning stage.
-opencode run \
-    --model "$MODEL" \
-    --dir "$REPO_DIR" \
-    --auto \
-    < "$PROMPT_FILE" \
-    || true  # Don't fail here — check which output file was written instead
+[[ "$PLAN_TIMEOUT" -gt 0 ]] && echo "  Timeout: ${PLAN_TIMEOUT}s"
+opencode_with_fallback "$MODEL" "$REPO_DIR" "$PROMPT_FILE" "$PLAN_TIMEOUT"
+# Don't fail here — check which output file was written instead
 
 # ── Validate BLUEPRINT.md sections ───────────────────────────────────────────
 # Required headers must be present exactly so downstream tools can parse them.

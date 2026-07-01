@@ -117,12 +117,30 @@ cp .env.example .env
 ```bash
 docker compose up -d
 ```
+\- OR -
+```make
+make up
+```
 
 This starts MySQL and the worker together. The worker processes one issue per run, then exits. `restart: unless-stopped` in `docker-compose.yml` brings it back up automatically, creating a polling loop with `IDLE_SLEEP` seconds between polls when the workspace is idle.
 
 To run once (e.g., for testing):
 ```bash
 docker compose run --rm worker
+```
+\- OR -
+```make
+make run
+```
+
+If you make a change to a script, the worker container will need to
+be rebuilt:
+```bash
+docker compose run --rm --build worker 
+```
+\- OR -
+```make
+make rebuild
 ```
 
 ### 3. Alternative: bare Docker run

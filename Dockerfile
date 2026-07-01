@@ -4,6 +4,8 @@ FROM alpine:3.19
 RUN apk add --no-cache \
     bash curl git jq \
     unzip rsync \
+    mariadb-client \
+    ripgrep \
     github-cli \
     nodejs npm \
     php82 \
@@ -12,7 +14,9 @@ RUN apk add --no-cache \
     php82-mbstring \
     php82-phar \
     php82-xml \
+    php82-xmlreader \
     php82-xmlwriter \
+    php82-simplexml \
     php82-tokenizer \
     php82-pdo_mysql \
     php82-session \

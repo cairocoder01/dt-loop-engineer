@@ -16,7 +16,7 @@ if [[ ! -d "$WP_TESTS_DIR" ]]; then
         -o /tmp/install-wp-tests.sh
     chmod +x /tmp/install-wp-tests.sh
 
-    bash /tmp/install-wp-tests.sh \
+    echo "y" | bash /tmp/install-wp-tests.sh \
         "$WP_DB_NAME" \
         "$WP_DB_USER" \
         "$WP_DB_PASS" \

@@ -28,7 +28,10 @@ done
 
 # ── Auth with GitHub CLI ─────────────────────────────────────────────────────
 log "Authenticating with GitHub..."
-echo "$GH_TOKEN" | gh auth login --with-token --hostname "github.com"
+# gh exits 1 when GH_TOKEN is already set in the environment (it uses the env var
+# automatically and refuses to store credentials on top of it). That's fine — subsequent
+# gh commands will authenticate via GH_TOKEN regardless.
+echo "$GH_TOKEN" | gh auth login --with-token --hostname "github.com" || true
 
 # ── Run bootstrap hooks (once per container lifetime) ────────────────────────
 BOOTSTRAP_DONE="$STATE_DIR/.bootstrap_complete"

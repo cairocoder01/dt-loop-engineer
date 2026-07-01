@@ -6,6 +6,7 @@ services:
   # before each issue so tests always start from a clean state.
   mysql:
     image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${WP_DB_NAME}
@@ -47,7 +48,9 @@ services:
       # ── AI provider ───────────────────────────────────────────────────────────
       GEMINI_API_TOKEN: ${GEMINI_API_TOKEN:?set GEMINI_API_TOKEN in .env}
       OPENCODE_MODEL: ${OPENCODE_MODEL}
+      OPENCODE_FALLBACK_MODELS: ${OPENCODE_FALLBACK_MODELS:-}
       AGENT_TIMEOUT: ${AGENT_TIMEOUT}
+      PLAN_TIMEOUT: ${PLAN_TIMEOUT:-1200}
 
       # ── WordPress test database ───────────────────────────────────────────────
       # WP_DB_HOST is always "mysql" (the service above); not read from .env.
@@ -83,8 +86,11 @@ services:
       # Per-run log files written by core-runner.sh (one file per container run).
       # Browse with: ls -lt logs/ | head  or  tail -f logs/<filename>
       - ./logs:/var/log/loop-engineer
+      # Persists the .bootstrap_complete flag so bootstrap hooks only run once.
+      - state_data:/workspace/state
       # Uncomment to mount a WordPress options secrets file:
       # - ${WP_OPTIONS_FILE_HOST_PATH}:/run/secrets/wp-options:ro
 
 volumes:
   mysql_data:
+  state_data:
