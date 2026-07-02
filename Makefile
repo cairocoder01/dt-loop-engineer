@@ -23,6 +23,9 @@ db:
 run:
 	docker compose run --rm $(APP_NAME)
 
+bash:
+	docker compose run --entrypoint bash $(APP_NAME)
+
 down:
 	docker compose down
 

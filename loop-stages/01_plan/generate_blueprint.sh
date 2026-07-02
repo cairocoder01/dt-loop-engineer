@@ -13,8 +13,8 @@ set -euo pipefail
 cd "$REPO_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MODEL="${OPENCODE_MODEL:-google/gemini-3-flash-preview}"
-PLAN_TIMEOUT="${PLAN_TIMEOUT:-${AGENT_TIMEOUT:-1200}}"  # default 20 min; inherits AGENT_TIMEOUT if set
+MODEL="${OPENCODE_PLAN_MODEL:-${OPENCODE_MODEL:-google/gemini-3-flash-preview}}"
+PLAN_TIMEOUT="${PLAN_TIMEOUT:-${AGENT_TIMEOUT:-1200}}"  # inherits AGENT_TIMEOUT if not set explicitly
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 QUESTIONS="$REPO_DIR/QUESTIONS.md"
 
@@ -114,7 +114,8 @@ fi
 
 # ── Planning prompt ───────────────────────────────────────────────────────────
 PROMPT_FILE=$(mktemp /tmp/loop-plan-prompt.XXXXXX)
-trap 'rm -f "$PROMPT_FILE"' EXIT
+CAPTURE_FILE=$(mktemp /tmp/loop-plan-capture.XXXXXX)
+trap 'rm -f "$PROMPT_FILE" "$CAPTURE_FILE"' EXIT
 
 # Use a variable for triple-backtick to avoid heredoc command-substitution
 TICK='```'
@@ -261,19 +262,70 @@ Keep questions concrete. "Should this be a key_select or multi_select field?" is
 
 ---
 
-Write the appropriate file now. Do not write any other files.
+IMPORTANT: You MUST use the file-write tool to save the output to disk.
+Do NOT print the file content as a text response — create the actual file on disk.
+Write either BLUEPRINT.md or QUESTIONS.md in the current working directory.
+Do not write any other files.
 PROMPT
 
 # ── Run opencode ──────────────────────────────────────────────────────────────
-export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN:-}"
+# Configure API credentials and provider config based on the model's provider prefix.
+if [[ "$MODEL" == google/* || "$MODEL" == "" ]]; then
+    export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN:?GEMINI_API_TOKEN required for google/ models}"
+elif [[ "$MODEL" == ollama/* ]]; then
+    export OLLAMA_HOST="${OLLAMA_HOST:-http://host.docker.internal:11434}"
+    # opencode requires Ollama to be registered as a custom provider with baseURL.
+    # Collect all Ollama model keys (primary + any ollama fallbacks).
+    _ollama_keys=()
+    for _m in "$MODEL" $(echo "${OPENCODE_FALLBACK_MODELS:-}" | tr ',' ' '); do
+        _m="${_m// /}"
+        [[ "$_m" == ollama/* ]] && _ollama_keys+=("${_m#ollama/}")
+    done
+    _models_json=$(printf '%s\n' "${_ollama_keys[@]}" \
+        | jq -Rn '[inputs | select(. != "")] | map({key: ., value: {}}) | from_entries')
+    export OPENCODE_CONFIG_CONTENT
+    OPENCODE_CONFIG_CONTENT=$(jq -n \
+        --arg baseURL "${OLLAMA_HOST}/v1" \
+        --argjson models "$_models_json" \
+        '{
+            provider: {
+                ollama: {
+                    npm: "@ai-sdk/openai-compatible",
+                    name: "Ollama",
+                    options: { baseURL: $baseURL },
+                    models: $models
+                }
+            }
+        }')
+else
+    # For other providers (anthropic/, openai/, etc.) pass through any key they need.
+    # Set GOOGLE_GENERATIVE_AI_API_KEY only if a token is available so the env stays clean.
+    [[ -n "${GEMINI_API_TOKEN:-}" ]] && export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN}"
+fi
 
 # shellcheck source=../lib/opencode_runner.sh
 source "$SCRIPT_DIR/loop-stages/lib/opencode_runner.sh"
 
 echo "Invoking opencode planner ($MODEL)..."
 [[ "$PLAN_TIMEOUT" -gt 0 ]] && echo "  Timeout: ${PLAN_TIMEOUT}s"
-opencode_with_fallback "$MODEL" "$REPO_DIR" "$PROMPT_FILE" "$PLAN_TIMEOUT"
+opencode_with_fallback "$MODEL" "$REPO_DIR" "$PROMPT_FILE" "$PLAN_TIMEOUT" "$CAPTURE_FILE"
 # Don't fail here — check which output file was written instead
+
+# ── Extraction fallback ───────────────────────────────────────────────────────
+# If opencode printed the file content to stdout instead of writing it to disk,
+# extract the markdown from the captured output and write the file ourselves.
+if [[ ( ! -f "$BLUEPRINT" || ! -s "$BLUEPRINT" ) && ( ! -f "$QUESTIONS" || ! -s "$QUESTIONS" ) ]]; then
+    if [[ -f "$CAPTURE_FILE" && -s "$CAPTURE_FILE" ]]; then
+        extracted=$(awk '/^```markdown[[:space:]]*$/{in_block=1;next} in_block && /^```[[:space:]]*$/{in_block=0;next} in_block{print}' "$CAPTURE_FILE")
+        if echo "$extracted" | grep -qF "### Task Summary"; then
+            printf '%s\n' "$extracted" > "$BLUEPRINT"
+            echo "  [fallback] Extracted BLUEPRINT.md from opencode stdout (model printed instead of writing file)."
+        elif echo "$extracted" | grep -qF "## Questions Before Planning"; then
+            printf '%s\n' "$extracted" > "$QUESTIONS"
+            echo "  [fallback] Extracted QUESTIONS.md from opencode stdout (model printed instead of writing file)."
+        fi
+    fi
+fi
 
 # ── Validate BLUEPRINT.md sections ───────────────────────────────────────────
 # Required headers must be present exactly so downstream tools can parse them.

@@ -46,11 +46,18 @@ services:
       MAX_LOOP_RETRIES: ${MAX_LOOP_RETRIES}
 
       # ── AI provider ───────────────────────────────────────────────────────────
-      GEMINI_API_TOKEN: ${GEMINI_API_TOKEN:?set GEMINI_API_TOKEN in .env}
+      # GEMINI_API_TOKEN is optional — only required when OPENCODE_MODEL starts with google/
+      GEMINI_API_TOKEN: ${GEMINI_API_TOKEN:-}
+      # OLLAMA_HOST points the container at the host machine's Ollama instance.
+      # host.docker.internal resolves on Docker Desktop (Mac/Windows) automatically;
+      # on Linux it requires the extra_hosts entry below.
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       OPENCODE_MODEL: ${OPENCODE_MODEL}
+      OPENCODE_PLAN_MODEL: ${OPENCODE_PLAN_MODEL:-}
+      OPENCODE_EXECUTE_MODEL: ${OPENCODE_EXECUTE_MODEL:-}
       OPENCODE_FALLBACK_MODELS: ${OPENCODE_FALLBACK_MODELS:-}
       AGENT_TIMEOUT: ${AGENT_TIMEOUT}
-      PLAN_TIMEOUT: ${PLAN_TIMEOUT:-1200}
+      PLAN_TIMEOUT: ${PLAN_TIMEOUT:-}
 
       # ── WordPress test database ───────────────────────────────────────────────
       # WP_DB_HOST is always "mysql" (the service above); not read from .env.
@@ -59,6 +66,13 @@ services:
       WP_DB_USER: ${WP_DB_USER}
       WP_DB_PASS: ${WP_DB_PASS}
       WP_VERSION: ${WP_VERSION}
+      # WordPress files live in the persistent wp_data volume so they survive
+      # container restarts and don't need to be re-downloaded every time.
+      # WP_CORE_DIR is read by wp-cli's install-wp-tests.sh; WP_INSTALL_PATH and
+      # WP_TESTS_DIR are used by our own hook and verify scripts.
+      WP_CORE_DIR: /workspace/wp-data/wordpress
+      WP_INSTALL_PATH: /workspace/wp-data/wordpress
+      WP_TESTS_DIR: /workspace/wp-data/wordpress-tests-lib
 
       # ── Base WordPress theme ──────────────────────────────────────────────────
       DT_BASE_THEME_REPO: ${DT_BASE_THEME_REPO}
@@ -79,8 +93,16 @@ services:
       DRY_RUN: ${DRY_RUN}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS}
 
+      # ── Timezone ──────────────────────────────────────────────────────────────
+      TZ: ${TZ:-UTC}
+
       # ── Polling interval ──────────────────────────────────────────────────────
       IDLE_SLEEP: ${IDLE_SLEEP}
+
+    # Needed on Linux so host.docker.internal resolves to the host machine's IP.
+    # Docker Desktop (Mac/Windows) provides this automatically.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     volumes:
       # Per-run log files written by core-runner.sh (one file per container run).
@@ -88,9 +110,13 @@ services:
       - ./logs:/var/log/loop-engineer
       # Persists the .bootstrap_complete flag so bootstrap hooks only run once.
       - state_data:/workspace/state
+      # Persists the WordPress install and test library across container restarts.
+      # Without this, WP would be re-downloaded every time the container is recreated.
+      - wp_data:/workspace/wp-data
       # Uncomment to mount a WordPress options secrets file:
       # - ${WP_OPTIONS_FILE_HOST_PATH}:/run/secrets/wp-options:ro
 
 volumes:
   mysql_data:
   state_data:
+  wp_data:

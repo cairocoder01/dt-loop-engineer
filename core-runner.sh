@@ -35,7 +35,9 @@ echo "$GH_TOKEN" | gh auth login --with-token --hostname "github.com" || true
 
 # ── Run bootstrap hooks (once per container lifetime) ────────────────────────
 BOOTSTRAP_DONE="$STATE_DIR/.bootstrap_complete"
-if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
+# Re-run bootstrap if /tmp was cleared by a container restart (flag persists in state
+# volume but WP test library and WordPress install live in ephemeral /tmp).
+if [[ ! -f "$BOOTSTRAP_DONE" || ! -d "${WP_TESTS_DIR:-/tmp/wordpress-tests-lib}" ]]; then
     log "Running bootstrap hooks..."
     for hook in "$SCRIPT_DIR/hooks/bootstrap"/*.sh; do
         log "  → $(basename "$hook")"
@@ -222,6 +224,18 @@ ISSUE_NUM=$(echo "$DISCOVERED_ISSUE"   | jq -r '.[0].number')
 ISSUE_TITLE=$(echo "$DISCOVERED_ISSUE" | jq -r '.[0].title')
 ISSUE_BODY=$(echo "$DISCOVERED_ISSUE"  | jq -r '.[0].body')
 ISSUE_URL=$(echo "$DISCOVERED_ISSUE"   | jq -r '.[0].url')
+
+# ── Ensure required labels exist in target repo ──────────────────────────────
+ensure_repo_labels() {
+    local repo="$1"
+    log "Ensuring labels exist in $GITHUB_OWNER/$repo..."
+    # gh label create --force creates or updates; never errors if label already exists
+    gh label create "$TRIGGER_LABEL"    --repo "$GITHUB_OWNER/$repo" --color "0075ca" --force 2>/dev/null || log "WARNING: could not create label '$TRIGGER_LABEL'"
+    gh label create "$PROCESSING_LABEL" --repo "$GITHUB_OWNER/$repo" --color "e4e669" --force 2>/dev/null || log "WARNING: could not create label '$PROCESSING_LABEL'"
+    gh label create "$WAITING_LABEL"    --repo "$GITHUB_OWNER/$repo" --color "d93f0b" --force 2>/dev/null || log "WARNING: could not create label '$WAITING_LABEL'"
+    gh label create "$READY_LABEL"      --repo "$GITHUB_OWNER/$repo" --color "0e8a16" --force 2>/dev/null || log "WARNING: could not create label '$READY_LABEL'"
+}
+ensure_repo_labels "$TARGET_REPO"
 
 log "Issue:    [$TARGET_REPO#$ISSUE_NUM] $ISSUE_TITLE"
 log "          $ISSUE_URL"
@@ -441,7 +455,7 @@ Human input is needed before the agent can continue. Update the issue with the r
     fi
 
     log "Verify failed. Errors written to VERIFY_ERRORS.md. Retrying ($((RETRIES + 1))/$MAX_LOOP_RETRIES)..."
-    ((RETRIES++))
+    RETRIES=$((RETRIES + 1))
 done
 
 # ── Max retries reached ──────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ cd "$REPO_DIR"
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 VERIFY_ERRORS="$REPO_DIR/VERIFY_ERRORS.md"
 PROGRESS="$REPO_DIR/PROGRESS.md"
-MODEL="${OPENCODE_MODEL:-google/gemini-2.0-flash}"
+MODEL="${OPENCODE_EXECUTE_MODEL:-${OPENCODE_MODEL:-google/gemini-2.0-flash}}"
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-1800}"   # seconds; set to 0 to disable
 
 if [[ ! -f "$BLUEPRINT" ]]; then
@@ -106,7 +106,12 @@ Do not write COMPLETE unless you have verified every item in the Acceptance Crit
 - Follow BLUEPRINT.md exactly. Implement what is specified; add nothing extra.
 - Do not commit. The orchestrator handles all git operations.
 - Do not modify test infrastructure (phpunit.xml, .phpcs.xml, composer.json)
-  unless the blueprint explicitly instructs it.
+  unless the blueprint explicitly instructs it, OR VERIFY_ERRORS.md requires
+  a missing dependency (e.g. adding phpunit/phpunit to require-dev).
+- You may run \`vendor/bin/phpunit\` if it is available — catching test failures
+  early reduces verify-stage retries. If phpunit is not installed, skip it and
+  continue; stage 03 runs it automatically. Never write BLOCKED because phpunit
+  is not available.
 - All user-facing strings must use WordPress translation functions (__(), esc_html__(), etc.)
   with text domain 'disciple_tools'.
 - If you are uncertain about an implementation detail, check the existing codebase
@@ -120,27 +125,65 @@ Do not write COMPLETE unless you have verified every item in the Acceptance Crit
 } > "$PROGRESS"
 
 # ── API key mapping ───────────────────────────────────────────────────────────
-export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN:-}"
+# Configure API credentials based on the provider prefix of the active model.
+if [[ "$MODEL" == google/* || "$MODEL" == "" ]]; then
+    export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN:?GEMINI_API_TOKEN required for google/ models}"
+elif [[ "$MODEL" == ollama/* ]]; then
+    export OLLAMA_HOST="${OLLAMA_HOST:-http://host.docker.internal:11434}"
+else
+    # For other providers (anthropic/, openai/, etc.) pass through any key they need.
+    # Set GOOGLE_GENERATIVE_AI_API_KEY only if a token is available so the env stays clean.
+    [[ -n "${GEMINI_API_TOKEN:-}" ]] && export GOOGLE_GENERATIVE_AI_API_KEY="${GEMINI_API_TOKEN}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../lib/opencode_runner.sh
 source "$SCRIPT_DIR/loop-stages/lib/opencode_runner.sh"
 
-# ── MCP configuration ─────────────────────────────────────────────────────────
-# MCP servers are configured via OPENCODE_CONFIG_CONTENT (inline JSON); there
-# is no --mcp-server CLI flag. opencode manages the server's lifecycle.
+# ── opencode configuration ────────────────────────────────────────────────────
+# MCP servers are configured via OPENCODE_CONFIG_CONTENT (inline JSON).
+# When using Ollama, a custom provider block is also required so opencode knows
+# the baseURL (http://<host>:11434/v1) and which models are available.
 export OPENCODE_CONFIG_CONTENT
-OPENCODE_CONFIG_CONTENT=$(jq -n \
-    --argjson enabled true \
-    '{
-        mcp: {
-            playwright: {
-                type: "local",
-                command: ["npx", "-y", "@playwright/mcp"],
-                enabled: $enabled
-            }
+
+_mcp_block=$(jq -n '{
+    mcp: {
+        playwright: {
+            type: "local",
+            command: ["npx", "-y", "@playwright/mcp"],
+            enabled: true
         }
-    }')
+    }
+}')
+
+if [[ "$MODEL" == ollama/* ]]; then
+    # Collect all Ollama model keys (primary + any ollama fallbacks) so opencode
+    # can resolve them at runtime without hitting an "unknown model" error.
+    _ollama_keys=()
+    for _m in "$MODEL" $(echo "${OPENCODE_FALLBACK_MODELS:-}" | tr ',' ' '); do
+        _m="${_m// /}"
+        [[ "$_m" == ollama/* ]] && _ollama_keys+=("${_m#ollama/}")
+    done
+    _models_json=$(printf '%s\n' "${_ollama_keys[@]}" \
+        | jq -Rn '[inputs | select(. != "")] | map({key: ., value: {}}) | from_entries')
+    _provider_block=$(jq -n \
+        --arg baseURL "${OLLAMA_HOST}/v1" \
+        --argjson models "$_models_json" \
+        '{
+            provider: {
+                ollama: {
+                    npm: "@ai-sdk/openai-compatible",
+                    name: "Ollama",
+                    options: { baseURL: $baseURL },
+                    models: $models
+                }
+            }
+        }')
+    OPENCODE_CONFIG_CONTENT=$(jq -s '.[0] * .[1]' \
+        <(echo "$_provider_block") <(echo "$_mcp_block"))
+else
+    OPENCODE_CONFIG_CONTENT="$_mcp_block"
+fi
 
 # ── Write prompt to temp file and create scope sentinel ──────────────────────
 PROMPT_FILE=$(mktemp /tmp/loop-prompt.XXXXXX)

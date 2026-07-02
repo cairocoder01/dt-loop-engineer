@@ -56,6 +56,15 @@ if [[ ! -f "vendor/bin/phpunit" ]]; then
     composer install --no-interaction --prefer-dist --optimize-autoloader
 fi
 
+if [[ ! -f "vendor/bin/phpunit" ]]; then
+    echo ""
+    echo "ERROR: phpunit not found at vendor/bin/phpunit after composer install."
+    echo "Add phpunit to the project's composer.json require-dev, e.g.:"
+    echo '  "require-dev": { "phpunit/phpunit": "^10" }'
+    echo "Then run: composer install"
+    exit 1
+fi
+
 # ── PHPUnit config ────────────────────────────────────────────────────────────
 if [[ -f "phpunit.xml" ]]; then
     CONFIG_FLAG="--configuration phpunit.xml"

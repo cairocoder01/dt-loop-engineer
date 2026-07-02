@@ -19,6 +19,7 @@ RUN apk add --no-cache \
     php82-simplexml \
     php82-tokenizer \
     php82-pdo_mysql \
+    php82-mysqli \
     php82-session \
     php82-zip \
     php82-opcache \
