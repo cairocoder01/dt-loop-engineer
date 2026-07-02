@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$REPO_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-MODEL="${OPENCODE_PLAN_MODEL:-${OPENCODE_MODEL:-google/gemini-3-flash-preview}}"
+MODEL="${OPENCODE_PLAN_MODEL:-${OPENCODE_MODEL:-google/gemini-3.1-flash-lite}}"
 PLAN_TIMEOUT="${PLAN_TIMEOUT:-${AGENT_TIMEOUT:-1200}}"  # inherits AGENT_TIMEOUT if not set explicitly
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 QUESTIONS="$REPO_DIR/QUESTIONS.md"

@@ -206,7 +206,7 @@ Copy `.env.example` to `.env` and fill in the values below. All variables with d
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENCODE_MODEL` | `google/gemini-3-flash-preview` | opencode model in `provider/model` format |
+| `OPENCODE_MODEL` | `google/gemini-3.1-flash-lite` | opencode model in `provider/model` format |
 | `BASE_BRANCH` | _(auto-detected)_ | Branch PRs target; auto-detects `develop → main → master` if blank |
 
 ---
