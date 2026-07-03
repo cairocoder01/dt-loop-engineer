@@ -86,6 +86,56 @@ cleanup_processing_label() {
     apply_labels "$extra_label" "$PROCESSING_LABEL"
 }
 
+# ── Checkpoint helper — commit WIP + push branch so a crashed/timed-out run resumes ──
+# Commits everything on the agent branch (including the loop artifacts BLUEPRINT.md /
+# PROGRESS.md / VERIFY_ERRORS.md) and pushes it. While the loop runs, the pushed branch
+# IS the recovery trail: the next container checks it out and picks up exactly where this
+# one stopped. The artifacts are stripped from the branch tip at delivery (stage 04) so
+# they never appear in the final PR. Requires AGENT_BRANCH and git identity to be set.
+# Always returns 0 — a failed checkpoint must never abort the loop.
+checkpoint() {
+    local msg="$1"
+    (
+        cd "$REPO_DIR" || exit 0
+        git add --all
+
+        # Secret guard: never let a checkpoint push leak token values (prompt-injection defense).
+        local staged_diff secret_var secret_val
+        staged_diff=$(git diff --cached 2>/dev/null || true)
+        for secret_var in GH_TOKEN GEMINI_API_TOKEN; do
+            secret_val="${!secret_var:-}"
+            [[ ${#secret_val} -lt 10 ]] && continue
+            if echo "$staged_diff" | grep -qF "$secret_val"; then
+                log "Checkpoint ABORTED: value of \$$secret_var found in staged diff (possible prompt injection). Not committing."
+                git reset HEAD -- . >/dev/null 2>&1 || true
+                exit 0
+            fi
+        done
+
+        if git diff --cached --quiet; then
+            log "Checkpoint: nothing to commit ($msg)"
+            exit 0
+        fi
+
+        if [[ "${DRY_RUN:-false}" == "true" ]]; then
+            log "[DRY-RUN] checkpoint commit+push suppressed: $msg"
+            git reset HEAD -- . >/dev/null 2>&1 || true
+            exit 0
+        fi
+
+        git commit -q -m "$msg" || { log "Checkpoint commit failed: $msg"; exit 0; }
+        # Update the remote-tracking ref so --force-with-lease has a baseline (no-op for a
+        # brand-new branch). We only ever overwrite our own previous checkpoint.
+        git fetch origin "$AGENT_BRANCH" >/dev/null 2>&1 || true
+        if git push -u --force-with-lease origin "$AGENT_BRANCH" >/dev/null 2>&1; then
+            log "Checkpoint pushed → $AGENT_BRANCH: $msg"
+        else
+            log "Checkpoint push FAILED (work is committed locally; next checkpoint will retry): $msg"
+        fi
+    )
+    return 0
+}
+
 # ── Issue discovery (3-tier priority) ───────────────────────────────────────
 # Sets globals: DISCOVERED_ISSUE, RECOVERY_MODE, RECOVERY_BRANCH, PR_MODE, PR_NUM
 
@@ -288,30 +338,34 @@ SLUG=$(echo "$ISSUE_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' 
 AGENT_BRANCH="agent/${ISSUE_NUM}-${SLUG}"
 VERIFY_ERRORS_FILE="$REPO_DIR/VERIFY_ERRORS.md"
 
-if [[ "$RECOVERY_MODE" == "true" ]]; then
-    # --- Recovery: resume on existing branch ---
-    TARGET_BRANCH="${RECOVERY_BRANCH:-$AGENT_BRANCH}"
-    EXISTING_BRANCH=$(git ls-remote --heads origin "refs/heads/${TARGET_BRANCH}" 2>/dev/null \
+# Look for an already-pushed branch to resume, regardless of how we got here.
+# The branch is the source of truth for "work exists" — checkpoint commits push it
+# after every stage, so a resumable run always has one. We adopt it whether this is
+# an explicit recovery (PROCESSING_LABEL / linked PR) OR a re-triggered issue whose
+# earlier run already checkpointed work (e.g. resumed after a BLOCKED clarification).
+EXISTING_BRANCH=""
+if [[ -n "${RECOVERY_BRANCH:-}" ]]; then
+    EXISTING_BRANCH=$(git ls-remote --heads origin "refs/heads/${RECOVERY_BRANCH}" 2>/dev/null \
         | awk '{print $2}' | sed 's|refs/heads/||' | head -1)
+fi
+if [[ -z "$EXISTING_BRANCH" ]]; then
+    EXISTING_BRANCH=$(git ls-remote --heads origin "refs/heads/agent/${ISSUE_NUM}-*" 2>/dev/null \
+        | awk '{print $2}' | sed 's|refs/heads/||' | head -1)
+fi
 
-    # Fallback: search for any agent/<issue-num>-* branch
-    if [[ -z "$EXISTING_BRANCH" ]]; then
-        EXISTING_BRANCH=$(git ls-remote --heads origin "refs/heads/agent/${ISSUE_NUM}-*" 2>/dev/null \
-            | awk '{print $2}' | sed 's|refs/heads/||' | head -1)
+if [[ -n "$EXISTING_BRANCH" ]]; then
+    # --- Resume: check out the previously pushed branch (committed work + artifacts) ---
+    git checkout "$EXISTING_BRANCH"
+    AGENT_BRANCH="$EXISTING_BRANCH"
+    log "Resuming on existing branch: $AGENT_BRANCH"
+
+    LAST_COMMITS=$(git log --oneline -5 2>/dev/null || echo "(none)")
+    VERIFY_SUMMARY=""
+    if [[ -f "$VERIFY_ERRORS_FILE" ]]; then
+        VERIFY_SUMMARY="$(head -30 "$VERIFY_ERRORS_FILE")"
     fi
 
-    if [[ -n "$EXISTING_BRANCH" ]]; then
-        git checkout "$EXISTING_BRANCH"
-        AGENT_BRANCH="$EXISTING_BRANCH"
-        log "Resuming on branch: $AGENT_BRANCH"
-
-        LAST_COMMITS=$(git log --oneline -5 2>/dev/null || echo "(none)")
-        VERIFY_SUMMARY=""
-        if [[ -f "$VERIFY_ERRORS_FILE" ]]; then
-            VERIFY_SUMMARY="$(head -30 "$VERIFY_ERRORS_FILE")"
-        fi
-
-        post_comment "**Loop Engineer resuming** — previous container run was interrupted.
+    post_comment "**Loop Engineer resuming** — picking up committed work from a previous run.
 
 Branch: \`$AGENT_BRANCH\`
 Last commits:
@@ -322,23 +376,24 @@ ${VERIFY_SUMMARY:+Last verify errors:
 \`\`\`
 $VERIFY_SUMMARY
 \`\`\`}"
-    else
-        log "Recovery failed: no branch found matching 'agent/${ISSUE_NUM}-*' or '${TARGET_BRANCH}'"
-        post_comment "**Recovery failed** — could not locate previous work.
-
-No branch found matching \`agent/${ISSUE_NUM}-*\` or \`${TARGET_BRANCH}\`.
-
-Please check whether the previous run left any partial changes and re-apply \`$TRIGGER_LABEL\` when ready to retry."
-        cleanup_processing_label "$WAITING_LABEL"
-        exit 1
-    fi
+elif [[ "$RECOVERY_MODE" == "true" ]]; then
+    # Recovery was expected (PROCESSING_LABEL or linked PR) but no branch was ever pushed
+    # — the previous run crashed before its first checkpoint. Nothing to resume, so start
+    # fresh on the branch and redo the work from the plan.
+    log "Recovery expected but no pushed branch found — starting fresh on $AGENT_BRANCH"
+    git checkout -b "$AGENT_BRANCH"
 else
-    # Fresh start
+    # --- Fresh start ---
     git checkout -b "$AGENT_BRANCH"
     log "Working branch: $AGENT_BRANCH"
 fi
 
 export AGENT_BRANCH
+
+# ── Git identity for checkpoint + delivery commits ───────────────────────────
+# Set once here so checkpoint() can commit throughout the loop, not just at delivery.
+git config user.email "loop-engineer[bot]@disciple.tools"
+git config user.name  "DT Loop Engineer"
 
 # ── Verify helper ────────────────────────────────────────────────────────────
 # run_verify_script <path>
@@ -403,9 +458,26 @@ Please answer the questions above, then re-apply the \`$TRIGGER_LABEL\` label to
 
     [[ $PLAN_EXIT -ne 0 ]] && fail "Blueprint generation failed (exit $PLAN_EXIT)"
 
+    # Checkpoint the plan: pushes the branch so recovery has the blueprint even if the
+    # execute stage crashes. No-op on later iterations when the blueprint is unchanged.
+    checkpoint "wip(#${ISSUE_NUM}): blueprint — ${ISSUE_TITLE}"
+
     # Stage 02: Execute
     log "Stage 02: Running agent..."
     bash "$SCRIPT_DIR/loop-stages/02_execute/run_opencode_agent.sh"
+
+    # Checkpoint partial work immediately — before any decision below — so an interrupted
+    # (or timed-out) execution is preserved on the remote branch for the next run.
+    checkpoint "wip(#${ISSUE_NUM}): iteration $((RETRIES + 1)) — agent execution"
+
+    # Agent execution timed out: work is checkpointed, but the task isn't finished. Skip
+    # verification (it would report noise on incomplete code) and retry — the next
+    # iteration reuses the checked-in plan and continues from the committed partial work.
+    if [[ -f "$REPO_DIR/PROGRESS.md" ]] && grep -q "^TIMEOUT:" "$REPO_DIR/PROGRESS.md"; then
+        log "Agent timed out — partial work checkpointed. Retrying to continue ($((RETRIES + 1))/$MAX_LOOP_RETRIES)."
+        RETRIES=$((RETRIES + 1))
+        continue
+    fi
 
     # Check for blocked state
     if [[ -f "$REPO_DIR/PROGRESS.md" ]] && grep -q "^BLOCKED:" "$REPO_DIR/PROGRESS.md"; then

@@ -249,11 +249,12 @@ Per-repo verify scripts in `.loop-engineer/verify/*.sh|js` are run after the sys
 ### `04_deliver` — PR Creation
 
 `open_github_pr.sh`:
-1. Scans staged changes for secret values (`GH_TOKEN`, `GEMINI_API_TOKEN`) before committing — aborts if found
-2. Commits with identity `DT Loop Engineer <loop-engineer[bot]@disciple.tools>`
-3. Pushes with `--force-with-lease` (safe to retry; fails if someone else pushed to the agent branch)
-4. Opens a PR with a metadata table (issue, model, iterations), verify checklist, and collapsible blueprint
-5. Removes `PROCESSING_LABEL`, adds `READY_LABEL` to the source issue
+1. Strips the loop artifacts (`BLUEPRINT.md`, `PROGRESS.md`, `VERIFY_ERRORS.md`, `QUESTIONS.md`) that were checkpoint-committed during the loop — because they were added then removed on the same branch, the final PR diff omits them
+2. Scans staged changes for secret values (`GH_TOKEN`, `GEMINI_API_TOKEN`) before committing — aborts if found
+3. Commits with identity `DT Loop Engineer <loop-engineer[bot]@disciple.tools>` (on top of the WIP checkpoint commits already pushed during the loop)
+4. Pushes with `--force-with-lease` (safe to retry; fails if someone else pushed to the agent branch)
+5. Opens a PR with a metadata table (issue, model, iterations), verify checklist, and collapsible blueprint
+6. Removes `PROCESSING_LABEL`, adds `READY_LABEL` to the source issue
 
 PRs are opened ready for review (not as drafts) — all checks passed means the work is complete.
 
@@ -304,11 +305,24 @@ Before E2E tests run, `02b_prep_e2e_site.sh` syncs the agent's code changes into
       │
       ├─ agent blocked    → [WAITING_LABEL]  (human must re-apply TRIGGER_LABEL)
       ├─ max retries      → [WAITING_LABEL]  (human must review + re-apply TRIGGER_LABEL)
-      ├─ recovery failed  → [WAITING_LABEL]
+      ├─ agent timed out  → stays [PROCESSING_LABEL]  (auto-resumes; no human needed)
       └─ success          → [READY_LABEL]    (PR opened)
 ```
 
-A container run that finds `PROCESSING_LABEL` on an issue knows the previous run was interrupted. It enters recovery mode, finds the existing agent branch, resumes the loop, and posts a comment with the last few commits and any prior verify errors.
+`PROCESSING_LABEL` stays on the issue for the entire run, so a container that finds it knows the previous run was interrupted and enters recovery.
+
+### Crash & timeout recovery
+
+The loop **checkpoints progress to a pushed branch as it works** — this is what makes recovery real:
+
+1. **After planning**, `BLUEPRINT.md` is committed and the agent branch is pushed. The plan now survives a crash.
+2. **After every execute iteration**, all partial work (plus `PROGRESS.md` / `VERIFY_ERRORS.md`) is committed and pushed.
+3. **On the next run**, the orchestrator finds the pushed `agent/<issue>-*` branch, checks it out, and continues:
+   - planning is **skipped** — the checked-in `BLUEPRINT.md` is reused, so work resumes from the exact plan it was built on;
+   - the execute prompt is fed the prior `PROGRESS.md` trail and the committed partial changes, and told to continue rather than restart.
+4. **Agent timeouts** (`AGENT_TIMEOUT`) are treated as *resumable*, not as a human-input block: the partial work is checkpointed and the loop retries, continuing from the commit. Only genuine `BLOCKED:` states (missing information) route to `WAITING_LABEL`.
+
+The checkpoint artifacts (`BLUEPRINT.md`, `PROGRESS.md`, etc.) are stripped from the branch tip at delivery, so they never appear in the final PR.
 
 ---
 

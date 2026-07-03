@@ -20,9 +20,34 @@ if [[ ! -f "$BLUEPRINT" ]]; then
     exit 1
 fi
 
+# ── Capture prior progress trail (present when resuming a checkpointed branch) ──
+# Must run before PROGRESS.md is reinitialized below so the agent can see what a
+# previous, interrupted run already did and continue rather than restart.
+PRIOR_PROGRESS=""
+if [[ -f "$PROGRESS" && -s "$PROGRESS" ]]; then
+    PRIOR_PROGRESS=$(tail -c 4000 "$PROGRESS")
+fi
+
 # ── Build prompt ──────────────────────────────────────────────────────────────
 IS_RETRY=false
 PROMPT=$(cat "$BLUEPRINT")
+
+if [[ -n "$PRIOR_PROGRESS" ]]; then
+    PROMPT="$PROMPT
+
+---
+
+## Resuming Prior Work
+
+A previous run was interrupted before finishing. Its partial changes are ALREADY
+present in the working tree, and its progress trail is below. Continue from where it
+left off — inspect what is already done and do NOT redo completed steps or restart
+from scratch.
+
+\`\`\`
+$PRIOR_PROGRESS
+\`\`\`"
+fi
 
 if [[ -f "$VERIFY_ERRORS" && -s "$VERIFY_ERRORS" ]]; then
     IS_RETRY=true
@@ -115,7 +140,13 @@ Do not write COMPLETE unless you have verified every item in the Acceptance Crit
 - All user-facing strings must use WordPress translation functions (__(), esc_html__(), etc.)
   with text domain 'disciple_tools'.
 - If you are uncertain about an implementation detail, check the existing codebase
-  for the pattern used in a similar field or endpoint before deciding."
+  for the pattern used in a similar field or endpoint before deciding.
+- The repo contains gitignored dependency directories (\`vendor/\`, \`node_modules/\`)
+  with tens of thousands of third-party files. Do NOT run recursive listings
+  (\`ls -R\`, \`find\` over the repo root, \`tree\`) or read files inside them — it
+  floods context with irrelevant output. Navigate to the specific project files
+  named in the blueprint instead. The only allowed use of \`vendor/\` is running
+  \`vendor/bin/phpunit\` as noted above."
 
 # ── Initialize PROGRESS.md ────────────────────────────────────────────────────
 {
@@ -201,9 +232,11 @@ AGENT_EXIT=$OPENCODE_LAST_EXIT
 
 # ── Timeout guard ─────────────────────────────────────────────────────────────
 # timeout(1) exits 124 when the child is killed for exceeding the deadline.
+# A timeout is NOT a "needs human input" block — the work is incomplete but resumable.
+# The orchestrator checkpoints the partial work and retries, continuing from the commit.
 if [[ $AGENT_EXIT -eq 124 ]]; then
-    echo "Agent timed out after ${AGENT_TIMEOUT}s — marking BLOCKED"
-    echo "BLOCKED: Agent execution timed out after ${AGENT_TIMEOUT} seconds. Check container logs for last activity." \
+    echo "Agent timed out after ${AGENT_TIMEOUT}s — marking TIMEOUT (resumable)"
+    echo "TIMEOUT: Agent execution timed out after ${AGENT_TIMEOUT} seconds. Partial work checkpointed; run will resume." \
         >> "$PROGRESS"
 fi
 

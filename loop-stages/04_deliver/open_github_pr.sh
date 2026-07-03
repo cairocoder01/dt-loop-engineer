@@ -27,15 +27,27 @@ echo "=== Delivering (PR mode: $PR_MODE, iterations: $LOOP_ITERATIONS) ==="
 git config user.email "loop-engineer[bot]@disciple.tools"
 git config user.name  "DT Loop Engineer"
 
-# ── Stage changes (exclude loop artifact files) ───────────────────────────────
+# ── Strip loop artifacts from the branch tip ─────────────────────────────────
+# During the loop these files were checkpoint-committed to the branch so an
+# interrupted run could resume. They must not appear in the PR, so remove them now
+# and let the final commit record the deletion. Because they were added and then
+# removed on the same branch, the net base...head diff GitHub renders omits them.
+rm -f BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md
 git add --all
-git reset HEAD -- BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md 2>/dev/null || true
 
 STAGED=$(git diff --cached --name-only)
-if [[ -z "$STAGED" ]]; then
-    echo "No changes to commit."
+
+# ── Confirm the branch actually contains work relative to the base branch ──────
+# Real code lives in the checkpoint commits made during the loop, not just in the
+# staging area — so assess "did we build anything" against the base branch, not the
+# index. (Artifacts still show here because their removal isn't committed yet; once
+# the commit below lands, the rendered PR diff excludes them.)
+git fetch origin "$BASE_BRANCH" 2>/dev/null || true
+REAL_CHANGES=$(git diff --name-only "origin/${BASE_BRANCH}...HEAD" 2>/dev/null || echo "")
+if [[ -z "$REAL_CHANGES" && -z "$STAGED" ]]; then
+    echo "No changes relative to '${BASE_BRANCH}'."
     # In PR mode the agent may have confirmed no changes were needed — not an error.
-    # In issue mode a no-op commit means something went wrong upstream.
+    # In issue mode a no-op run means something went wrong upstream.
     [[ "$PR_MODE" == "false" ]] && exit 1
 fi
 

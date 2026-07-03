@@ -20,6 +20,23 @@ QUESTIONS="$REPO_DIR/QUESTIONS.md"
 
 echo "=== Stage 01: Blueprint generation (model: $MODEL) ==="
 
+# ── Reuse an existing, valid blueprint ───────────────────────────────────────
+# When resuming a checkpointed branch (or retrying within a run), the plan is
+# already checked in. Reuse it so we continue from the exact plan the partial work
+# was built on, and to avoid burning tokens re-planning. Only regenerate if it's
+# missing or malformed.
+if [[ -f "$BLUEPRINT" && -s "$BLUEPRINT" ]]; then
+    _has_all_sections=true
+    for _section in "### Task Summary" "### Files to Modify" "### Implementation Plan" "### Acceptance Criteria" "### Edge Cases & Constraints"; do
+        grep -qF "$_section" "$BLUEPRINT" || { _has_all_sections=false; break; }
+    done
+    if [[ "$_has_all_sections" == "true" ]]; then
+        echo "Reusing existing BLUEPRINT.md ($(wc -l < "$BLUEPRINT") lines, all sections present) — skipping regeneration."
+        exit 0
+    fi
+    echo "Existing BLUEPRINT.md is incomplete — regenerating."
+fi
+
 # Clear stale planning artifacts from any previous iteration
 rm -f "$BLUEPRINT" "$QUESTIONS"
 
@@ -53,6 +70,37 @@ ${content}
 done
 [[ -z "$REPO_CONTEXT" ]] && REPO_CONTEXT="(No context files found in repo root)"
 echo "  Total context: ${CONTEXT_USED} / ${CONTEXT_BUDGET} chars"
+
+# ── Repository directory tree (gitignore-aware, dependency dirs excluded) ─────
+# Without this the planner reflexively runs `ls -R` to orient itself, which walks
+# into vendor/ and node_modules/ — tens of thousands of gitignored dependency
+# files that flood the context and burn tokens. We hand it the DIRECTORY tree up
+# front (not every file): it's complete rather than truncated, ~1/3 the tokens of
+# a file list, and enough to orient the planner. It can then list one specific
+# project directory for exact filenames instead of walking the whole repo root.
+# A cap guards against pathological monorepos with thousands of directories.
+TREE_MAX_DIRS=400
+if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    # git ls-files honours .gitignore (incl. nested), so vendor/node_modules are already out.
+    _all_dirs=$(git -C "$REPO_DIR" ls-files 2>/dev/null | sed 's|/[^/]*$||' | grep '/' | sort -u)
+else
+    # Non-git fallback: prune the usual heavyweight dependency/build dirs explicitly.
+    _all_dirs=$(cd "$REPO_DIR" && find . \
+        \( -type d \( -name vendor -o -name node_modules -o -name .git -o -name build -o -name dist \) -prune \) \
+        -o -type d -print 2>/dev/null | sed 's|^\./||' | grep -v '^\.$' | sort)
+fi
+_dir_total=$(printf '%s\n' "$_all_dirs" | grep -c . || true)
+REPO_TREE=$(printf '%s\n' "$_all_dirs" | head -n "$TREE_MAX_DIRS")
+if [[ -z "$REPO_TREE" ]]; then
+    REPO_TREE="(Repository has no subdirectories, or listing unavailable — files live in the root.)"
+    echo "  Dir tree: unavailable / flat repo"
+elif [[ "${_dir_total:-0}" -gt "$TREE_MAX_DIRS" ]]; then
+    REPO_TREE="${REPO_TREE}
+... (${_dir_total} directories total; list truncated to first ${TREE_MAX_DIRS})"
+    echo "  Dir tree: ${TREE_MAX_DIRS} of ${_dir_total} directories (dependency dirs excluded)"
+else
+    echo "  Dir tree: ${_dir_total} directories (dependency dirs excluded)"
+fi
 
 # ── Coding standards (system always included; per-repo appended if present) ───
 # The system WP_STANDARDS.md covers all DT ecosystem rules. A repo's own
@@ -144,6 +192,23 @@ ${STANDARDS}
 ## Repository Context
 
 ${REPO_CONTEXT}
+
+## Repository Directory Tree
+
+Below is the repository's directory tree (gitignored dependency directories such
+as \`vendor/\` and \`node_modules/\` are intentionally excluded — they contain tens
+of thousands of third-party files that are irrelevant to planning this change).
+
+Use this tree to find the directory a feature lives in, then list that ONE
+directory (e.g. \`ls dt-contacts/\`) to see its exact filenames. Do NOT run
+recursive listings (\`ls -R\`, \`find\` over the repo root, \`tree\`) and do NOT read
+or list files inside \`vendor/\` or \`node_modules/\`. Only look inside a dependency
+directory if the issue is specifically about a third-party library, and even then
+target the exact path — never a recursive scan.
+
+${TICK}
+${REPO_TREE}
+${TICK}
 
 ## Recent Discussion (issue/PR comments)
 
