@@ -9,6 +9,7 @@ RUN apk add --no-cache \
     github-cli \
     nodejs npm \
     php82 \
+    php82-ctype \
     php82-curl \
     php82-dom \
     php82-mbstring \
