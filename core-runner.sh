@@ -32,6 +32,12 @@ log "Authenticating with GitHub..."
 # automatically and refuses to store credentials on top of it). That's fine — subsequent
 # gh commands will authenticate via GH_TOKEN regardless.
 echo "$GH_TOKEN" | gh auth login --with-token --hostname "github.com" || true
+# Configure git to use gh as the credential helper for GitHub HTTPS remotes, so
+# `git push`/`git fetch` authenticate via GH_TOKEN instead of dropping to an
+# interactive username prompt.
+gh auth setup-git --hostname "github.com"
+# Fail loudly instead of hanging on an interactive prompt if credentials are ever missing.
+export GIT_TERMINAL_PROMPT=0
 
 # ── Run bootstrap hooks (once per container lifetime) ────────────────────────
 BOOTSTRAP_DONE="$STATE_DIR/.bootstrap_complete"
@@ -127,10 +133,15 @@ checkpoint() {
         # Update the remote-tracking ref so --force-with-lease has a baseline (no-op for a
         # brand-new branch). We only ever overwrite our own previous checkpoint.
         git fetch origin "$AGENT_BRANCH" >/dev/null 2>&1 || true
-        if git push -u --force-with-lease origin "$AGENT_BRANCH" >/dev/null 2>&1; then
+        local push_err
+        if push_err=$(git push -u --force-with-lease origin "$AGENT_BRANCH" 2>&1); then
             log "Checkpoint pushed → $AGENT_BRANCH: $msg"
         else
             log "Checkpoint push FAILED (work is committed locally; next checkpoint will retry): $msg"
+            # Surface the underlying git error (indented) so auth/ref failures are diagnosable.
+            # Redact token values defensively before logging (matches the secret guard above).
+            [[ ${#GH_TOKEN} -ge 10 ]] && push_err="${push_err//$GH_TOKEN/***}"
+            log "  git push error: ${push_err//$'\n'/ | }"
         fi
     )
     return 0

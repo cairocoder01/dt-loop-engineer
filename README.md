@@ -95,9 +95,39 @@ dt-loop-engineer/
 ## Prerequisites
 
 - **Docker** and **Docker Compose**
-- **GitHub Personal Access Token** with `repo` + `issues:write` + `pull_requests:write` scopes
+- **GitHub Personal Access Token** — see [required permissions](#github-token-permissions) below
 - **Gemini API key** (Google AI Studio)
 - Issues in target repos must be labeled with `TRIGGER_LABEL` to be picked up
+
+### GitHub token permissions
+
+The token supplied as `GH_TOKEN` needs **write** access to every target repo — it clones, pushes checkpoint/agent branches, opens PRs, and mutates issue/PR labels and comments. A read-only or under-scoped token authenticates fine and can *clone*, but pushes fail with a `403 Permission denied` (this is the most common setup mistake).
+
+**Fine-grained PAT** (recommended) — grant these on each target repo:
+
+| Permission | Access | Used for |
+|------------|--------|----------|
+| **Contents** | Read and write | Clone + push checkpoint and `agent/*` branches |
+| **Pull requests** | Read and write | Open/update the delivery PR (stage 04) |
+| **Issues** | Read and write | Discover labeled issues, comment progress, move labels |
+| **Metadata** | Read (mandatory) | Always required by fine-grained PATs |
+| **Workflows** | Read and write | Only if pushes ever touch `.github/workflows/` |
+
+Also set **Repository access** to include every repo the loop operates on.
+
+**Classic PAT** — the `repo` scope (full control of private repositories) covers all of the above. Add `workflow` if pushes may modify `.github/workflows/`.
+
+Verify a token can actually **write** to a repo by creating and immediately deleting a throwaway ref (`GH_TOKEN` must be set in the environment):
+
+```bash
+R=<owner>/<repo>
+SHA=$(gh api repos/$R/git/refs/heads --jq '.[0].object.sha')
+gh api -X POST repos/$R/git/refs -f ref=refs/heads/token-write-test -f sha="$SHA" \
+  && gh api -X DELETE repos/$R/git/refs/heads/token-write-test \
+  && echo "WRITE OK"
+```
+
+A `403 Resource not accessible by personal access token` means the token is missing Contents: write. (Don't rely on `gh api repos/... -q .permissions` — it reports the *account's* role on the repo, so it shows `push: true` even for an under-scoped token.)
 
 ---
 
@@ -165,7 +195,7 @@ Copy `.env.example` to `.env` and fill in the values below. All variables with d
 | Variable | Description |
 |---|---|
 | `GEMINI_API_TOKEN` | Google AI Studio API key |
-| `GH_TOKEN` | GitHub PAT for issue/PR mutation |
+| `GH_TOKEN` | GitHub PAT with write access to target repos ([permissions](#github-token-permissions)) |
 | `GITHUB_OWNER` | GitHub org or username (e.g. `cairocoder01`) |
 
 ### Issue Lifecycle Labels
