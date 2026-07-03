@@ -3,6 +3,7 @@ FROM alpine:3.19
 # Runtime dependencies: PHP 8.2, Node, Git, GitHub CLI, Chromium, Composer
 RUN apk add --no-cache \
     bash curl git jq \
+    tzdata \
     unzip rsync \
     mariadb-client \
     ripgrep \

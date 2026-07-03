@@ -150,7 +150,7 @@ Do not write COMPLETE unless you have verified every item in the Acceptance Crit
 
 # ── Initialize PROGRESS.md ────────────────────────────────────────────────────
 {
-    echo "Agent started at $(date -u)"
+    echo "Agent started at $(date)"
     [[ "$IS_RETRY" == "true" ]] && echo "Mode: retry (fixing prior verification errors)"
     echo ""
 } > "$PROGRESS"

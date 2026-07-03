@@ -11,14 +11,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${LOG_DIR:-/var/log/loop-engineer}"
 mkdir -p "$LOG_DIR"
 find "$LOG_DIR" -name "*.log" -mtime +"${LOG_RETENTION_DAYS:-30}" -delete 2>/dev/null || true
-LOG_FILE="$LOG_DIR/$(date -u +%Y%m%d-%H%M%S).log"
+LOG_FILE="$LOG_DIR/$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Log: $LOG_FILE"
 STATE_DIR="$SCRIPT_DIR/state"
 REPO_DIR="$SCRIPT_DIR/repo"
 BASE_BRANCH="${BASE_BRANCH:-}"   # auto-detected after clone; override via env var
 
-log()  { echo "[$(date -u +%H:%M:%S)] $*"; }
+log()  { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { log "ERROR: $*"; exit 1; }
 
 # ── Validate required env vars ──────────────────────────────────────────────
