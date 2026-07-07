@@ -57,12 +57,24 @@ if [[ ! -f "vendor/bin/phpunit" ]]; then
 fi
 
 if [[ ! -f "vendor/bin/phpunit" ]]; then
+    # Distinguish two cases:
+    #   1. The repo declares phpunit but the binary is still missing → composer install
+    #      genuinely failed; that's a real error worth surfacing.
+    #   2. The repo doesn't declare phpunit at all → it has no PHPUnit suite to run.
+    #      Most DT plugins (scaffolded from the plugin starter template) verify via
+    #      PHPCS + syntax/installation checks and never ship PHPUnit; only the theme
+    #      declares it. Treat this as a clean skip, not a failure, so the loop isn't
+    #      blocked on a check the repo was never designed to run.
+    if [[ -f composer.json ]] && grep -q '"phpunit/phpunit"' composer.json; then
+        echo ""
+        echo "ERROR: phpunit is declared in composer.json but vendor/bin/phpunit is missing."
+        echo "composer install appears to have failed. Try: composer install"
+        exit 1
+    fi
     echo ""
-    echo "ERROR: phpunit not found at vendor/bin/phpunit after composer install."
-    echo "Add phpunit to the project's composer.json require-dev, e.g.:"
-    echo '  "require-dev": { "phpunit/phpunit": "^10" }'
-    echo "Then run: composer install"
-    exit 1
+    echo "SKIP: This repo does not declare PHPUnit in composer.json — no unit-test suite to run."
+    echo "(DT plugins verify via PHPCS and syntax/installation checks; only the theme ships PHPUnit.)"
+    exit 0
 fi
 
 # ── PHPUnit config ────────────────────────────────────────────────────────────

@@ -57,8 +57,14 @@ fi
 # ── Comment/label helpers — route to PR or issue depending on mode ───────────
 # These are defined early so discover_issue can reference them after it sets globals.
 
+# Marker prepended to every comment. Comments post under the GH_TOKEN owner's
+# account (there's no dedicated bot user), so this makes it clear a bot authored
+# them. Exported so the deliver stage (a child process) reuses the same string.
+BOT_SIGNATURE="🤖 _From **@loop_engineer_bot** — automated comment._"
+export BOT_SIGNATURE
+
 post_comment() {
-    local body="$1"
+    local body="${BOT_SIGNATURE}"$'\n\n'"$1"
     if [[ "${DRY_RUN:-false}" == "true" ]]; then
         log "[DRY-RUN] comment suppressed (${#body} chars): ${body:0:80}..."
         return 0
@@ -90,6 +96,98 @@ apply_labels() {
 cleanup_processing_label() {
     local extra_label="${1:-}"
     apply_labels "$extra_label" "$PROCESSING_LABEL"
+}
+
+# ── Persistent per-issue state (survives PR delivery) ────────────────────────
+# The blueprint is stripped from the branch at delivery so it doesn't pollute the
+# PR diff. We stash it in the state volume (keyed by repo+issue) so a later
+# PR-review iteration reuses it instead of re-planning, and so we can tell which
+# review comments are new. STATE_ISSUE_DIR is set once the issue is known.
+persist_issue_state() {
+    [[ -n "${STATE_ISSUE_DIR:-}" ]] || return 0
+    mkdir -p "$STATE_ISSUE_DIR"
+    # Only the blueprint is carried across delivered iterations — it's what lets
+    # stage 01 skip regeneration. PROGRESS is run-scoped and intentionally not kept
+    # (restoring a COMPLETE trail would mislead the next run into "resuming").
+    [[ -f "$REPO_DIR/BLUEPRINT.md" ]] && cp "$REPO_DIR/BLUEPRINT.md" "$STATE_ISSUE_DIR/BLUEPRINT.md"
+    # Advance the feedback marker to when this run STARTED gathering (not now), so a
+    # comment posted mid-run is reprocessed next iteration rather than silently skipped.
+    printf '%s\n' "${FEEDBACK_MARKER_NEXT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" > "$STATE_ISSUE_DIR/last_processed_at"
+    log "Persisted issue state to $STATE_ISSUE_DIR"
+}
+
+restore_issue_state() {
+    [[ -n "${STATE_ISSUE_DIR:-}" && -d "$STATE_ISSUE_DIR" ]] || return 0
+    # A branch-tip blueprint (from an interrupted, not-yet-delivered run) is fresher —
+    # never overwrite it. Only fill it in when the branch no longer carries one
+    # (i.e. a post-delivery review iteration, where delivery stripped it).
+    if [[ ! -f "$REPO_DIR/BLUEPRINT.md" && -f "$STATE_ISSUE_DIR/BLUEPRINT.md" ]]; then
+        cp "$STATE_ISSUE_DIR/BLUEPRINT.md" "$REPO_DIR/BLUEPRINT.md"
+        log "Restored BLUEPRINT.md from persisted state (post-delivery review iteration)."
+    fi
+}
+
+# Collect PR review feedback posted since the last delivery into REQUESTED_CHANGES.md,
+# which the execute stage treats as the highest-priority instruction. This is what
+# turns a re-triggered PR from "re-implement the blueprint" into "address the review".
+gather_pr_feedback() {
+    # Capture the cutoff for the NEXT run before doing anything, so persist_issue_state
+    # can advance the marker to run-start time (see the comment there).
+    FEEDBACK_MARKER_NEXT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    export FEEDBACK_MARKER_NEXT
+    [[ "${PR_MODE:-false}" == "true" && -n "${PR_NUM:-}" ]] || return 0
+    local since out reviews inline comments
+    since=$(cat "$STATE_ISSUE_DIR/last_processed_at" 2>/dev/null || echo "1970-01-01T00:00:00Z")
+    out="$REPO_DIR/REQUESTED_CHANGES.md"
+
+    # Review summaries (e.g. "Changes requested") with a non-empty body.
+    reviews=$(gh pr view "$PR_NUM" --repo "$GITHUB_OWNER/$TARGET_REPO" --json reviews 2>/dev/null \
+        | jq -r --arg since "$since" '(.reviews // [])
+            | map(select((.submittedAt > $since) and ((.body // "") != "")))
+            | map("- **" + .author.login + "** [" + .state + "]: " + .body) | join("\n")' 2>/dev/null || echo "")
+    # Inline (line-level) review comments.
+    inline=$(gh api "repos/$GITHUB_OWNER/$TARGET_REPO/pulls/$PR_NUM/comments" 2>/dev/null \
+        | jq -r --arg since "$since" 'map(select(.created_at > $since))
+            | map("- `" + .path + ":" + ((.line // .original_line // 0) | tostring) + "` — **" + .user.login + "**: " + .body) | join("\n")' 2>/dev/null || echo "")
+    # General PR conversation comments, excluding the loop bot's own (identified by
+    # the signature marker prepended to every bot comment).
+    comments=$(gh pr view "$PR_NUM" --repo "$GITHUB_OWNER/$TARGET_REPO" --json comments 2>/dev/null \
+        | jq -r --arg since "$since" '(.comments // [])
+            | map(select((.createdAt > $since) and ((.body | contains("@loop_engineer_bot")) | not)))
+            | map("- **" + .author.login + "**: " + .body) | join("\n")' 2>/dev/null || echo "")
+
+    if [[ -z "$reviews" && -z "$inline" && -z "$comments" ]]; then
+        log "No new PR feedback since $since."
+        return 0
+    fi
+
+    {
+        echo "# Requested Changes (PR #$PR_NUM review, since $since)"
+        [[ -n "$reviews" ]]  && { echo; echo "## Review summaries";      echo "$reviews"; }
+        [[ -n "$inline" ]]   && { echo; echo "## Inline code comments";  echo "$inline"; }
+        [[ -n "$comments" ]] && { echo; echo "## PR comments";           echo "$comments"; }
+    } > "$out"
+    log "Gathered new PR feedback into REQUESTED_CHANGES.md."
+}
+
+# Remove persisted state for issues whose issue/PR has closed (e.g. merged). Runs
+# only on the idle path, so it costs nothing during active work.
+gc_closed_state() {
+    local issues_root="$STATE_DIR/issues" repo_dir issue_dir repo issue state
+    [[ -d "$issues_root" ]] || return 0
+    for repo_dir in "$issues_root"/*/; do
+        [[ -d "$repo_dir" ]] || continue
+        repo=$(basename "$repo_dir")
+        for issue_dir in "$repo_dir"*/; do
+            [[ -d "$issue_dir" ]] || continue
+            issue=$(basename "$issue_dir")
+            state=$(gh issue view "$issue" --repo "$GITHUB_OWNER/$repo" --json state --jq '.state' 2>/dev/null || echo "")
+            if [[ "$state" == "CLOSED" ]]; then
+                rm -rf "$issue_dir"
+                log "GC: removed persisted state for closed $repo#$issue"
+            fi
+        done
+    done
 }
 
 # ── Checkpoint helper — commit WIP + push branch so a crashed/timed-out run resumes ──
@@ -159,8 +257,11 @@ extract_pr_details() {
 
     pr_num=$(echo "$prs"    | jq -r '.[0].number')
     pr_body=$(echo "$prs"   | jq -r '.[0].body // ""')
-    pr_branch=$(echo "$prs" | jq -r '.[0].headRefName // ""')
     pr_repo=$(echo "$prs"   | jq -r '.[0].repository.name')
+    # `gh search prs` cannot return headRefName (it's not a valid search field),
+    # so fetch the branch name separately with `gh pr view`, which does support it.
+    pr_branch=$(gh pr view "$pr_num" --repo "$GITHUB_OWNER/$pr_repo" \
+        --json headRefName --jq '.headRefName' 2>/dev/null || echo "")
 
     linked_num=$(echo "$pr_body" | grep -oiE '(closes|fixes|resolves) #[0-9]+' | grep -oE '[0-9]+' | head -1)
     [[ -z "$linked_num" ]] && return 1
@@ -210,7 +311,7 @@ discover_issue() {
         --owner "$GITHUB_OWNER" \
         --label "$PROCESSING_LABEL" \
         --state open \
-        --json repository,number,title,body,url,headRefName \
+        --json repository,number,title,body,url \
         --sort created --order asc \
         --limit 1 2>/dev/null || echo "[]")
 
@@ -231,7 +332,7 @@ discover_issue() {
         --owner "$GITHUB_OWNER" \
         --label "$TRIGGER_LABEL" \
         --state open \
-        --json repository,number,title,body,url,headRefName \
+        --json repository,number,title,body,url \
         --sort created --order asc \
         --limit 1 2>/dev/null || echo "[]")
 
@@ -272,6 +373,8 @@ PR_NUM=""
 DISCOVERED_ISSUE="[]"
 
 if ! discover_issue; then
+    # Nothing to do — opportunistically clean up state for closed/merged issues.
+    gc_closed_state
     # Sleep before exiting so that restart: unless-stopped in docker-compose
     # produces a ~60s polling interval rather than a tight busy-loop.
     IDLE_SLEEP="${IDLE_SLEEP:-60}"
@@ -306,6 +409,11 @@ log "Recovery: $RECOVERY_MODE"
 # Export for child scripts
 export TARGET_REPO ISSUE_NUM ISSUE_TITLE ISSUE_BODY ISSUE_URL BASE_BRANCH REPO_DIR
 export RECOVERY_MODE PR_MODE PR_NUM
+
+# Per-issue state dir on the persistent volume (keyed by repo+issue so it's stable
+# across PR-review iterations). Holds the reusable blueprint and the feedback marker.
+STATE_ISSUE_DIR="$STATE_DIR/issues/$TARGET_REPO/$ISSUE_NUM"
+export STATE_ISSUE_DIR
 
 # ── Apply PROCESSING_LABEL immediately (atomic claim) ────────────────────────
 # In PR mode this goes on the PR; in issue mode it goes on the issue.
@@ -369,24 +477,9 @@ if [[ -n "$EXISTING_BRANCH" ]]; then
     git checkout "$EXISTING_BRANCH"
     AGENT_BRANCH="$EXISTING_BRANCH"
     log "Resuming on existing branch: $AGENT_BRANCH"
-
-    LAST_COMMITS=$(git log --oneline -5 2>/dev/null || echo "(none)")
-    VERIFY_SUMMARY=""
-    if [[ -f "$VERIFY_ERRORS_FILE" ]]; then
-        VERIFY_SUMMARY="$(head -30 "$VERIFY_ERRORS_FILE")"
-    fi
-
-    post_comment "**Loop Engineer resuming** — picking up committed work from a previous run.
-
-Branch: \`$AGENT_BRANCH\`
-Last commits:
-\`\`\`
-$LAST_COMMITS
-\`\`\`
-${VERIFY_SUMMARY:+Last verify errors:
-\`\`\`
-$VERIFY_SUMMARY
-\`\`\`}"
+    # No "starting work" comment on purpose — the label flip to PROCESSING_LABEL is
+    # the visible "picked up" signal, and it keeps the PR thread free of noise. Only
+    # terminal states (needs-clarification / blocked / done / exhausted) get comments.
 elif [[ "$RECOVERY_MODE" == "true" ]]; then
     # Recovery was expected (PROCESSING_LABEL or linked PR) but no branch was ever pushed
     # — the previous run crashed before its first checkpoint. Nothing to resume, so start
@@ -400,6 +493,14 @@ else
 fi
 
 export AGENT_BRANCH
+
+# ── Restore persisted context + gather PR review feedback ────────────────────
+# After a delivery the branch no longer carries the blueprint; pull it back from the
+# state volume so stage 01 reuses it instead of re-planning. Then, on a PR-review
+# iteration, collect the reviewer's new comments so the execute stage addresses them
+# incrementally rather than re-implementing the original plan.
+restore_issue_state
+gather_pr_feedback
 
 # ── Git identity for checkpoint + delivery commits ───────────────────────────
 # Set once here so checkpoint() can commit throughout the loop, not just at delivery.
@@ -530,6 +631,9 @@ Human input is needed before the agent can continue. Update the issue with the r
 
     if [[ "$ALL_PASSED" == "true" ]]; then
         log "All verify stages passed!"
+        # Stash the blueprint + feedback marker before delivery strips artifacts
+        # from the branch, so the next review iteration can reuse them.
+        persist_issue_state
         log "Stage 04: Delivering..."
         export LOOP_ITERATIONS=$((RETRIES + 1))
         bash "$SCRIPT_DIR/loop-stages/04_deliver/open_github_pr.sh"

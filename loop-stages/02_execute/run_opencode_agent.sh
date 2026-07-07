@@ -11,6 +11,7 @@ cd "$REPO_DIR"
 
 BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 VERIFY_ERRORS="$REPO_DIR/VERIFY_ERRORS.md"
+REQUESTED_CHANGES="$REPO_DIR/REQUESTED_CHANGES.md"
 PROGRESS="$REPO_DIR/PROGRESS.md"
 MODEL="${OPENCODE_EXECUTE_MODEL:-${OPENCODE_MODEL:-google/gemini-2.0-flash}}"
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-1800}"   # seconds; set to 0 to disable
@@ -47,6 +48,28 @@ from scratch.
 \`\`\`
 $PRIOR_PROGRESS
 \`\`\`"
+fi
+
+if [[ -f "$REQUESTED_CHANGES" && -s "$REQUESTED_CHANGES" ]]; then
+    PROMPT="$PROMPT
+
+---
+
+## Human-Requested Changes (HIGHEST PRIORITY)
+
+This is a PR-review iteration. The implementation described by the blueprint above is
+ALREADY committed on this branch and present in the working tree. A human reviewer has
+requested the changes below. Your task is to make ONLY the incremental edits needed to
+address them — do NOT re-implement the blueprint from scratch, revert existing work, or
+redo steps that are already done. Read the relevant existing files first, then make the
+smallest change that satisfies each request.
+
+\`\`\`
+$(cat "$REQUESTED_CHANGES")
+\`\`\`
+
+Treat the blueprint as background/reference only. When every requested change is
+addressed, write COMPLETE to PROGRESS.md."
 fi
 
 if [[ -f "$VERIFY_ERRORS" && -s "$VERIFY_ERRORS" ]]; then
@@ -131,8 +154,10 @@ Do not write COMPLETE unless you have verified every item in the Acceptance Crit
 - Follow BLUEPRINT.md exactly. Implement what is specified; add nothing extra.
 - Do not commit. The orchestrator handles all git operations.
 - Do not modify test infrastructure (phpunit.xml, .phpcs.xml, composer.json)
-  unless the blueprint explicitly instructs it, OR VERIFY_ERRORS.md requires
-  a missing dependency (e.g. adding phpunit/phpunit to require-dev).
+  unless the blueprint explicitly instructs it. In particular, do NOT add
+  phpunit to composer.json — most DT plugins intentionally don't ship it and
+  verify via PHPCS + syntax checks; stage 03 skips PHPUnit when it isn't
+  declared, so a missing phpunit is never a reason to touch composer.json.
 - You may run \`vendor/bin/phpunit\` if it is available — catching test failures
   early reduces verify-stage retries. If phpunit is not installed, skip it and
   continue; stage 03 runs it automatically. Never write BLOCKED because phpunit

@@ -4,13 +4,23 @@
 set -euo pipefail
 
 WP_VERSION="${WP_VERSION:-latest}"
-WP_TESTS_DIR="${WP_TESTS_DIR:-/tmp/wordpress-tests-lib}"
+# Exported so wp-cli's install-wp-tests.sh (a child process) installs to the same
+# location the verify stage reads from. docker-compose sets this to a path under
+# the persistent wp_data volume.
+export WP_TESTS_DIR="${WP_TESTS_DIR:-/tmp/wordpress-tests-lib}"
 
 echo "Setting up WordPress test suite (WP $WP_VERSION)..."
 
-# Download the test suite install script if not already cached
-if [[ ! -d "$WP_TESTS_DIR" ]]; then
-    mkdir -p "$WP_TESTS_DIR"
+# Guard on the definitive marker file, NOT the directory. install-wp-tests.sh only
+# downloads includes/ when $WP_TESTS_DIR does not already exist, so we must not
+# pre-create it here — doing so makes that script skip the includes/ download and
+# leaves a half-installed tree (config present, functions.php missing). Checking the
+# marker file also lets a previously-broken install on the persistent volume self-heal.
+if [[ ! -f "$WP_TESTS_DIR/includes/functions.php" ]]; then
+    # Clear any partial install so install-wp-tests.sh's own `[ ! -d ]` check passes
+    # and it fetches includes/ and data/.
+    rm -rf "$WP_TESTS_DIR"
+
     curl -s \
         "https://raw.githubusercontent.com/wp-cli/scaffold-command/main/templates/install-wp-tests.sh" \
         -o /tmp/install-wp-tests.sh

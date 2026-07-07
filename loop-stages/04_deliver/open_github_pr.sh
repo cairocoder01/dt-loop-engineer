@@ -17,6 +17,8 @@ BLUEPRINT="$REPO_DIR/BLUEPRINT.md"
 BASE_BRANCH="${BASE_BRANCH:-main}"   # core-runner.sh auto-detects and exports this
 PR_MODE="${PR_MODE:-false}"
 PR_NUM="${PR_NUM:-}"
+# Exported by core-runner.sh; fallback here so this script works run standalone.
+BOT_SIGNATURE="${BOT_SIGNATURE:-🤖 _From **@loop_engineer_bot** — automated comment._}"
 LOOP_ITERATIONS="${LOOP_ITERATIONS:-1}"
 OPENCODE_MODEL="${OPENCODE_MODEL:-unknown}"
 
@@ -32,7 +34,7 @@ git config user.name  "DT Loop Engineer"
 # interrupted run could resume. They must not appear in the PR, so remove them now
 # and let the final commit record the deletion. Because they were added and then
 # removed on the same branch, the net base...head diff GitHub renders omits them.
-rm -f BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md
+rm -f BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md REQUESTED_CHANGES.md
 git add --all
 
 STAGED=$(git diff --cached --name-only)
@@ -108,6 +110,8 @@ if [[ -d "$REPO_VERIFY_DIR" ]]; then
 fi
 
 PR_BODY="$(cat <<PREOF
+${BOT_SIGNATURE}
+
 ## Summary
 
 Closes #${ISSUE_NUM}
@@ -168,7 +172,9 @@ if [[ "$PR_MODE" == "true" ]]; then
 
     gh pr comment "$PR_NUM" \
         --repo "$GITHUB_OWNER/$TARGET_REPO" \
-        --body "**Agent completed work** after ${LOOP_ITERATIONS} iteration(s). All verification checks passed — ready for review.
+        --body "${BOT_SIGNATURE}
+
+**Agent completed work** after ${LOOP_ITERATIONS} iteration(s). All verification checks passed — ready for review.
 
 ${VERIFY_CHECKLIST}"
 
@@ -209,7 +215,9 @@ else
 
     gh issue comment "$ISSUE_NUM" \
         --repo "$GITHUB_OWNER/$TARGET_REPO" \
-        --body "**Agent completed work** after ${LOOP_ITERATIONS} iteration(s). PR ready for review: $PR_URL"
+        --body "${BOT_SIGNATURE}
+
+**Agent completed work** after ${LOOP_ITERATIONS} iteration(s). PR ready for review: $PR_URL"
 
     echo "Issue #${ISSUE_NUM} updated. Done."
 fi
