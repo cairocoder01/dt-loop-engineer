@@ -37,3 +37,22 @@ if [[ ! -f "$WP_TESTS_DIR/includes/functions.php" ]]; then
 else
     echo "WordPress test suite already installed, skipping."
 fi
+
+# ── Normalize test DB credentials (self-heal) ─────────────────────────────────
+# install-wp-tests.sh only writes wp-tests-config.php when it doesn't already
+# exist, so a stale or placeholder config on the persistent wp_data volume is
+# never corrected by re-running the installer. PHPUnit's bootstrap.php reads this
+# file at runtime, and its DB_HOST wins over any WP_TESTS_DB_* env var. If the
+# host is left as 'localhost', mysqli connects via a nonexistent unix socket and
+# fails with "(HY000/2002) No such file or directory". Force the four DB defines
+# to match the container env on every boot so a clobbered config self-heals.
+TESTS_CONFIG="$WP_TESTS_DIR/wp-tests-config.php"
+if [[ -f "$TESTS_CONFIG" ]]; then
+    sed -i \
+        -e "s/define( 'DB_NAME', '[^']*' );/define( 'DB_NAME', '${WP_DB_NAME}' );/" \
+        -e "s/define( 'DB_USER', '[^']*' );/define( 'DB_USER', '${WP_DB_USER}' );/" \
+        -e "s/define( 'DB_PASSWORD', '[^']*' );/define( 'DB_PASSWORD', '${WP_DB_PASS}' );/" \
+        -e "s/define( 'DB_HOST', '[^']*' );/define( 'DB_HOST', '${WP_DB_HOST}' );/" \
+        "$TESTS_CONFIG"
+    echo "Normalized test DB credentials in $TESTS_CONFIG (host=${WP_DB_HOST}, db=${WP_DB_NAME})"
+fi
