@@ -418,10 +418,16 @@ export STATE_ISSUE_DIR
 # ── Apply PROCESSING_LABEL immediately (atomic claim) ────────────────────────
 # In PR mode this goes on the PR; in issue mode it goes on the issue.
 # Removes TRIGGER_LABEL at the same time so another container doesn't double-pick.
-if [[ "$RECOVERY_MODE" == "false" ]]; then
-    apply_labels "$PROCESSING_LABEL" "$TRIGGER_LABEL"
-    log "Label applied: '$PROCESSING_LABEL' (removed '$TRIGGER_LABEL')"
-fi
+#
+# This runs UNCONDITIONALLY — including recovery runs. Priority-2 discovery finds
+# PRs *by* their TRIGGER_LABEL (a human re-applied it to request another pass) and
+# reaches here with RECOVERY_MODE=true; if we skipped re-labeling those, the trigger
+# label would linger and the PR would be re-picked on every poll cycle (the
+# "re-running over and over" symptom). add/remove-label are idempotent, so this is a
+# harmless no-op for genuine Priority-1 recovery (processing already on, trigger
+# already gone).
+apply_labels "$PROCESSING_LABEL" "$TRIGGER_LABEL"
+log "Label applied: '$PROCESSING_LABEL' (removed '$TRIGGER_LABEL')"
 
 # ── Clone repo ───────────────────────────────────────────────────────────────
 rm -rf "$REPO_DIR"
