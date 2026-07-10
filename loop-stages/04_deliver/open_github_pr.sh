@@ -24,6 +24,20 @@ OPENCODE_MODEL="${OPENCODE_MODEL:-unknown}"
 
 echo "=== Delivering (PR mode: $PR_MODE, iterations: $LOOP_ITERATIONS) ==="
 
+# ── Label helpers (REST) ──────────────────────────────────────────────────────
+# Use the REST issues/labels endpoints, NOT `gh pr edit`/`gh issue edit --add-label`:
+# the bundled gh (2.39.x) references the sunset Projects-classic `projectCards` field
+# in those commands' GraphQL query, so they fail and — when their errors were hidden —
+# silently left labels unchanged (delivered PRs never got READY_LABEL). PRs and issues
+# share the /issues/:n/labels endpoints. Never abort delivery over a label hiccup.
+add_label_rest() {  # <number> <label>
+    gh api -X POST "repos/$GITHUB_OWNER/$TARGET_REPO/issues/$1/labels" -f "labels[]=$2" >/dev/null 2>&1 \
+        || echo "  WARNING: failed to add label '$2' to #$1"
+}
+remove_label_rest() {  # <number> <label>  (404 when not applied — expected)
+    gh api -X DELETE "repos/$GITHUB_OWNER/$TARGET_REPO/issues/$1/labels/$2" >/dev/null 2>&1 || true
+}
+
 # ── Git author ────────────────────────────────────────────────────────────────
 # Consistent identity for all agent commits — identifiable in git log and blame.
 git config user.email "loop-engineer[bot]@disciple.tools"
@@ -178,15 +192,9 @@ if [[ "$PR_MODE" == "true" ]]; then
 
 ${VERIFY_CHECKLIST}"
 
-    gh pr edit "$PR_NUM" \
-        --repo "$GITHUB_OWNER/$TARGET_REPO" \
-        --remove-label "$PROCESSING_LABEL" \
-        --add-label "$READY_LABEL" \
-        2>/dev/null || true
-    gh pr edit "$PR_NUM" \
-        --repo "$GITHUB_OWNER/$TARGET_REPO" \
-        --remove-label "$TRIGGER_LABEL" \
-        2>/dev/null || true
+    add_label_rest    "$PR_NUM" "$READY_LABEL"
+    remove_label_rest "$PR_NUM" "$PROCESSING_LABEL"
+    remove_label_rest "$PR_NUM" "$TRIGGER_LABEL"
 
     echo "PR #$PR_NUM updated. Done."
 
@@ -203,15 +211,9 @@ else
 
     echo "PR opened: $PR_URL"
 
-    gh issue edit "$ISSUE_NUM" \
-        --repo "$GITHUB_OWNER/$TARGET_REPO" \
-        --remove-label "$PROCESSING_LABEL" \
-        --add-label "$READY_LABEL" \
-        2>/dev/null || true
-    gh issue edit "$ISSUE_NUM" \
-        --repo "$GITHUB_OWNER/$TARGET_REPO" \
-        --remove-label "$TRIGGER_LABEL" \
-        2>/dev/null || true
+    add_label_rest    "$ISSUE_NUM" "$READY_LABEL"
+    remove_label_rest "$ISSUE_NUM" "$PROCESSING_LABEL"
+    remove_label_rest "$ISSUE_NUM" "$TRIGGER_LABEL"
 
     gh issue comment "$ISSUE_NUM" \
         --repo "$GITHUB_OWNER/$TARGET_REPO" \

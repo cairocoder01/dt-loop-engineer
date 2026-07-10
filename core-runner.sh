@@ -77,6 +77,15 @@ post_comment() {
 }
 
 # apply_labels <add-label-or-empty> <remove-label-or-empty>
+#
+# Uses the REST issues/labels endpoints via `gh api`, NOT `gh pr edit --add-label`.
+# The bundled gh (Alpine's github-cli, 2.39.x) builds a GraphQL query for
+# `gh pr edit`/`gh issue edit` that references the now-sunset Projects-classic
+# `projectCards` field, so every label mutation through those commands fails with a
+# GraphQL error and exits non-zero. The previous `2>/dev/null || true` hid both the
+# error and the failure, so labels silently never changed while the log claimed
+# success. REST doesn't touch projectCards and works on any gh version. PRs and issues
+# share the same /issues/:n/labels endpoints, so one number covers both modes.
 apply_labels() {
     local add_label="${1:-}"
     local remove_label="${2:-}"
@@ -84,12 +93,25 @@ apply_labels() {
         log "[DRY-RUN] labels skipped: add='${add_label:-}' remove='${remove_label:-}'"
         return 0
     fi
-    if [[ "$PR_MODE" == "true" ]]; then
-        [[ -n "$add_label" ]]    && gh pr edit "$PR_NUM"    --repo "$GITHUB_OWNER/$TARGET_REPO" --add-label    "$add_label"    2>/dev/null || true
-        [[ -n "$remove_label" ]] && gh pr edit "$PR_NUM"    --repo "$GITHUB_OWNER/$TARGET_REPO" --remove-label "$remove_label" 2>/dev/null || true
-    else
-        [[ -n "$add_label" ]]    && gh issue edit "$ISSUE_NUM" --repo "$GITHUB_OWNER/$TARGET_REPO" --add-label    "$add_label"    2>/dev/null || true
-        [[ -n "$remove_label" ]] && gh issue edit "$ISSUE_NUM" --repo "$GITHUB_OWNER/$TARGET_REPO" --remove-label "$remove_label" 2>/dev/null || true
+    local num
+    if [[ "$PR_MODE" == "true" ]]; then num="$PR_NUM"; else num="$ISSUE_NUM"; fi
+
+    if [[ -n "$add_label" ]]; then
+        if gh api -X POST "repos/$GITHUB_OWNER/$TARGET_REPO/issues/$num/labels" \
+                -f "labels[]=$add_label" >/dev/null 2>&1; then
+            log "  label +'$add_label' (#$num)"
+        else
+            log "  WARNING: failed to add label '$add_label' to #$num"
+        fi
+    fi
+    if [[ -n "$remove_label" ]]; then
+        # DELETE returns 404 when the label isn't currently applied — expected and
+        # harmless (the desired end state is "not present"), so don't warn on it.
+        if gh api -X DELETE "repos/$GITHUB_OWNER/$TARGET_REPO/issues/$num/labels/$remove_label" >/dev/null 2>&1; then
+            log "  label -'$remove_label' (#$num)"
+        else
+            log "  label -'$remove_label' (#$num) — not present / already removed"
+        fi
     fi
 }
 

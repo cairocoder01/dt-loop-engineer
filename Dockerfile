@@ -7,7 +7,6 @@ RUN apk add --no-cache \
     unzip rsync \
     mariadb-client \
     ripgrep \
-    github-cli \
     nodejs npm \
     php82 \
     php82-ctype \
@@ -30,6 +29,25 @@ RUN apk add --no-cache \
 
 # PHP alias (Alpine names it php82)
 RUN ln -s /usr/bin/php82 /usr/local/bin/php
+
+# GitHub CLI — install the latest official release rather than Alpine's `github-cli`
+# package, which lags badly (alpine:3.19 shipped gh 2.39.x, whose `gh pr edit
+# --add-label` / `gh issue edit --add-label` fail against GitHub's now-sunset
+# Projects-classic `projectCards` GraphQL field). gh is a statically linked Go binary,
+# so the release tarball runs on musl/Alpine without glibc. Installed to /usr/local/bin,
+# which precedes /usr/bin on PATH. Latest tag is resolved at build time.
+RUN set -eux; \
+    case "$(uname -m)" in \
+        x86_64)  GH_ARCH=amd64 ;; \
+        aarch64) GH_ARCH=arm64 ;; \
+        *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    GH_VERSION="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name' | sed 's/^v//')"; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    mv "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}"; \
+    gh --version
 
 # Composer
 RUN curl -sS https://getcomposer.org/installer \
