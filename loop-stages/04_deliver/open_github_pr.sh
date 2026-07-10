@@ -43,6 +43,14 @@ remove_label_rest() {  # <number> <label>  (404 when not applied — expected)
 git config user.email "loop-engineer[bot]@disciple.tools"
 git config user.name  "DT Loop Engineer"
 
+# ── Capture blueprint content before stripping artifacts ─────────────────────
+# The PR body embeds the blueprint, but the next step deletes BLUEPRINT.md. Read
+# it into a variable now so the content survives the removal below.
+BLUEPRINT_CONTENT=""
+if [[ -f "$BLUEPRINT" ]]; then
+    BLUEPRINT_CONTENT=$(cat "$BLUEPRINT")
+fi
+
 # ── Strip loop artifacts from the branch tip ─────────────────────────────────
 # During the loop these files were checkpoint-committed to the branch so an
 # interrupted run could resume. They must not appear in the PR, so remove them now
@@ -103,10 +111,7 @@ fi
 git fetch origin "$AGENT_BRANCH" 2>/dev/null || true
 
 # ── Build PR body ─────────────────────────────────────────────────────────────
-BLUEPRINT_CONTENT=""
-if [[ -f "$BLUEPRINT" ]]; then
-    BLUEPRINT_CONTENT=$(cat "$BLUEPRINT")
-fi
+# BLUEPRINT_CONTENT was captured above, before the artifact files were stripped.
 
 # Verify checklist — names must stay in sync with loop-stages/03_verify/ filenames.
 VERIFY_CHECKLIST="- [x] PHP syntax & coding standards (PHPCS)
