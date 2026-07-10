@@ -170,6 +170,36 @@ gather_pr_feedback() {
     log "Gathered new PR feedback into REQUESTED_CHANGES.md."
 }
 
+# When a PR was picked up because its GitHub checks are FAILING (CI_FAILURE_MODE), fetch
+# the failing check names and append them to REQUESTED_CHANGES.md — the same file the
+# execute stage treats as the highest-priority instruction. The local verify stage (03)
+# re-runs most checks anyway, but naming exactly what CI flagged points the agent at the
+# right failure (and at checks the local verify can't reproduce, e.g. the built-asset
+# diff). Appends (>>) so it composes with any review feedback gathered just above.
+gather_ci_failures() {
+    [[ "${CI_FAILURE_MODE:-false}" == "true" && "${PR_MODE:-false}" == "true" && -n "${PR_NUM:-}" ]] || return 0
+    local out failing
+    out="$REPO_DIR/REQUESTED_CHANGES.md"
+    # bucket normalizes each check's state; anything not pass/skipping is a problem.
+    failing=$(gh pr checks "$PR_NUM" --repo "$GITHUB_OWNER/$TARGET_REPO" --json name,bucket,link 2>/dev/null \
+        | jq -r '[.[] | select(.bucket != "pass" and .bucket != "skipping")]
+            | map("- **" + .name + "** [" + .bucket + "]" + (if (.link // "") != "" then " — " + .link else "" end))
+            | join("\n")' 2>/dev/null || echo "")
+    if [[ -z "$failing" ]]; then
+        log "CI-failure mode but no failing checks reported now (possibly transient/rerun)."
+        return 0
+    fi
+    {
+        echo "# Failing CI checks (PR #$PR_NUM)"
+        echo
+        echo "This PR was delivered as ready for review, but the following GitHub checks are FAILING."
+        echo "Reproduce each locally, fix the underlying cause, and make the checks pass:"
+        echo
+        echo "$failing"
+    } >> "$out"
+    log "Recorded $(printf '%s\n' "$failing" | grep -c '^- ') failing CI check(s) into REQUESTED_CHANGES.md."
+}
+
 # Remove persisted state for issues whose issue/PR has closed (e.g. merged). Runs
 # only on the idle path, so it costs nothing during active work.
 gc_closed_state() {
@@ -284,7 +314,36 @@ discover_issue() {
     RECOVERY_BRANCH=""
     PR_MODE=false
     PR_NUM=""
+    CI_FAILURE_MODE=false
+    TRIGGER_PICKUP=false
     DISCOVERED_ISSUE="[]"
+
+    # --- Priority 0: PRs delivered as ready-for-review but with FAILING CI checks ---
+    # These are the most urgent: the agent already handed the PR off as "done", yet the
+    # automated GitHub checks disagree — we shipped something broken. Re-open and fix it
+    # immediately, ahead of any other work. (A PR mid-rework carries PROCESSING, not
+    # READY, so it's recovered via Priority 1b instead — these sets never overlap.)
+    log "Checking for ready-for-review PRs with FAILING checks (label: '$READY_LABEL')..."
+    local failing_prs
+    failing_prs=$(gh search prs \
+        --owner "$GITHUB_OWNER" \
+        --label "$READY_LABEL" \
+        --state open \
+        --checks failure \
+        --json repository,number,title,body,url \
+        --sort updated --order asc \
+        --limit 1 2>/dev/null || echo "[]")
+
+    if [[ "$failing_prs" != "[]" && -n "$failing_prs" && "$failing_prs" != "null" ]]; then
+        local pr_num_f
+        pr_num_f=$(echo "$failing_prs" | jq -r '.[0].number')
+        if extract_pr_details "$failing_prs"; then
+            CI_FAILURE_MODE=true
+            log "CI-failure recovery: ready PR #$pr_num_f has failing checks → issue #$(echo "$DISCOVERED_ISSUE" | jq -r '.[0].number')"
+            return 0
+        fi
+        log "WARNING: PR #$pr_num_f is ready with failing checks but has no linked issue — skipping."
+    fi
 
     # --- Priority 1a: Issues already marked as processing (crash recovery) ---
     log "Checking for in-progress issues (label: '$PROCESSING_LABEL')..."
@@ -340,6 +399,7 @@ discover_issue() {
         local pr_num_t
         pr_num_t=$(echo "$trigger_prs" | jq -r '.[0].number')
         if extract_pr_details "$trigger_prs"; then
+            TRIGGER_PICKUP=true   # human re-applied the trigger → deliberate re-trigger
             log "Open PR #$pr_num_t → linked issue #$(echo "$DISCOVERED_ISSUE" | jq -r '.[0].number'), branch: $RECOVERY_BRANCH"
             return 0
         fi
@@ -362,6 +422,7 @@ discover_issue() {
         return 1
     fi
 
+    TRIGGER_PICKUP=true   # fresh trigger-labeled issue → deliberate new work
     DISCOVERED_ISSUE="$issues"
     return 0
 }
@@ -370,6 +431,8 @@ RECOVERY_MODE=false
 RECOVERY_BRANCH=""
 PR_MODE=false
 PR_NUM=""
+CI_FAILURE_MODE=false
+TRIGGER_PICKUP=false
 DISCOVERED_ISSUE="[]"
 
 if ! discover_issue; then
@@ -408,12 +471,43 @@ log "Recovery: $RECOVERY_MODE"
 
 # Export for child scripts
 export TARGET_REPO ISSUE_NUM ISSUE_TITLE ISSUE_BODY ISSUE_URL BASE_BRANCH REPO_DIR
-export RECOVERY_MODE PR_MODE PR_NUM
+export RECOVERY_MODE PR_MODE PR_NUM CI_FAILURE_MODE
 
 # Per-issue state dir on the persistent volume (keyed by repo+issue so it's stable
 # across PR-review iterations). Holds the reusable blueprint and the feedback marker.
 STATE_ISSUE_DIR="$STATE_DIR/issues/$TARGET_REPO/$ISSUE_NUM"
 export STATE_ISSUE_DIR
+
+# ── Bounded auto-retry for CI-failure recovery ───────────────────────────────
+# A ready PR with failing checks (Priority 0) is picked WITHOUT a human in the loop,
+# so unlike the human-triggered path there's no natural gate. If the agent can't make
+# CI green, it would re-deliver → re-enter the ready+failing set → be re-picked forever,
+# burning API tokens. Bound it: after MAX_CI_FIX_ATTEMPTS auto-attempts, hand the PR to
+# a human (WAITING label) instead. The counter lives in the per-issue state volume.
+# Any NON-CI pickup (human re-applies TRIGGER_LABEL, or fresh issue work) resets it, so
+# a human who investigates and re-triggers grants a fresh batch of attempts.
+CI_ATTEMPTS_FILE="$STATE_ISSUE_DIR/ci_fix_attempts"
+MAX_CI_FIX_ATTEMPTS="${MAX_CI_FIX_ATTEMPTS:-3}"
+if [[ "$CI_FAILURE_MODE" == "true" ]]; then
+    mkdir -p "$STATE_ISSUE_DIR"
+    CI_ATTEMPTS=$(cat "$CI_ATTEMPTS_FILE" 2>/dev/null || echo 0)
+    [[ "$CI_ATTEMPTS" =~ ^[0-9]+$ ]] || CI_ATTEMPTS=0
+    if [[ "$CI_ATTEMPTS" -ge "$MAX_CI_FIX_ATTEMPTS" ]]; then
+        log "CI-failure auto-retry exhausted for PR #$PR_NUM ($CI_ATTEMPTS/$MAX_CI_FIX_ATTEMPTS). Handing off to a human."
+        post_comment "**Agent could not make CI pass** after $CI_ATTEMPTS automated attempt(s).
+
+This PR's automated checks are still failing. Auto-retry is paused to avoid a loop — a human needs to look at it. After fixing (or to let the agent try again), re-apply the \`$TRIGGER_LABEL\` label."
+        apply_labels "$WAITING_LABEL" "$READY_LABEL"
+        exit 0
+    fi
+    printf '%s\n' "$((CI_ATTEMPTS + 1))" > "$CI_ATTEMPTS_FILE"
+    log "CI-failure auto-retry attempt $((CI_ATTEMPTS + 1))/$MAX_CI_FIX_ATTEMPTS for PR #$PR_NUM."
+elif [[ "$TRIGGER_PICKUP" == "true" ]]; then
+    # A human deliberately (re-)applied the trigger label — grant a fresh CI-fix budget.
+    # Crash-recovery pickups (PROCESSING label) are NOT trigger pickups, so a resumed
+    # CI-fix run keeps its running count instead of silently resetting it.
+    rm -f "$CI_ATTEMPTS_FILE" 2>/dev/null || true
+fi
 
 # ── Apply PROCESSING_LABEL immediately (atomic claim) ────────────────────────
 # In PR mode this goes on the PR; in issue mode it goes on the issue.
@@ -428,6 +522,12 @@ export STATE_ISSUE_DIR
 # already gone).
 apply_labels "$PROCESSING_LABEL" "$TRIGGER_LABEL"
 log "Label applied: '$PROCESSING_LABEL' (removed '$TRIGGER_LABEL')"
+# A CI-failure rework was picked up by its READY_LABEL; it's no longer "ready for
+# review" while we rework it, so drop that label too. Deliver re-adds it on success.
+if [[ "$CI_FAILURE_MODE" == "true" ]]; then
+    apply_labels "" "$READY_LABEL"
+    log "Label removed: '$READY_LABEL' (CI-failure rework in progress)"
+fi
 
 # ── Clone repo ───────────────────────────────────────────────────────────────
 rm -rf "$REPO_DIR"
@@ -507,6 +607,7 @@ export AGENT_BRANCH
 # incrementally rather than re-implementing the original plan.
 restore_issue_state
 gather_pr_feedback
+gather_ci_failures
 
 # ── Git identity for checkpoint + delivery commits ───────────────────────────
 # Set once here so checkpoint() can commit throughout the loop, not just at delivery.
