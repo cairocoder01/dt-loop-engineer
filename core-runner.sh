@@ -18,6 +18,14 @@ STATE_DIR="$SCRIPT_DIR/state"
 REPO_DIR="$SCRIPT_DIR/repo"
 BASE_BRANCH="${BASE_BRANCH:-}"   # auto-detected after clone; override via env var
 
+# ── Loop artifacts ───────────────────────────────────────────────────────────
+# Working-state files the loop produces (the plan, progress trail, verify errors,
+# gathered review feedback, and clarification questions). They are NEVER committed
+# to the repo — they're mirrored into the per-issue state volume the moment they're
+# written, so crash recovery restores them without polluting the branch's git
+# history. See stash_artifacts / restore_artifacts / finalize_issue_state below.
+LOOP_ARTIFACTS=(BLUEPRINT.md QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md REQUESTED_CHANGES.md)
+
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { log "ERROR: $*"; exit 1; }
 
@@ -120,40 +128,77 @@ cleanup_processing_label() {
     apply_labels "$extra_label" "$PROCESSING_LABEL"
 }
 
-# ── Persistent per-issue state (survives PR delivery) ────────────────────────
-# The blueprint is stripped from the branch at delivery so it doesn't pollute the
-# PR diff. We stash it in the state volume (keyed by repo+issue) so a later
-# PR-review iteration reuses it instead of re-planning, and so we can tell which
-# review comments are new. STATE_ISSUE_DIR is set once the issue is known.
-persist_issue_state() {
+# ── Loop-artifact ↔ state-volume mirroring ───────────────────────────────────
+# Artifacts are never committed. Instead they live in the per-issue state volume
+# (keyed by repo+issue, so stable across PR-review iterations). We stash them there
+# the moment they're written and restore them at run start, so a crashed/timed-out
+# run resumes with its plan and progress intact — the branch carries only real code.
+
+# Keep git from ever staging the artifacts. .git/info/exclude is local to this clone
+# and never committed, so we don't touch the target repo's tracked .gitignore. Also
+# untrack any artifact a pre-change branch already committed (one-time cleanup — the
+# working copy is left in place; the index removal lands in the next checkpoint).
+exclude_artifacts_from_git() {
+    [[ -d "$REPO_DIR/.git" ]] || return 0
+    local exclude_file="$REPO_DIR/.git/info/exclude" f
+    for f in "${LOOP_ARTIFACTS[@]}"; do
+        grep -qxF "$f" "$exclude_file" 2>/dev/null || printf '%s\n' "$f" >> "$exclude_file"
+        if git -C "$REPO_DIR" ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+            git -C "$REPO_DIR" rm --cached --quiet "$f" >/dev/null 2>&1 || true
+            log "Untracked legacy committed artifact: $f (will stop being committed)"
+        fi
+    done
+}
+
+# Mirror the CURRENT set of artifacts in the working tree into the state volume:
+# copy the ones that exist, drop the ones that no longer do (so a regenerated plan
+# that removed QUESTIONS.md, say, doesn't leave a stale copy behind). Safe to call
+# often — it only runs after restore_artifacts has repopulated the fresh clone.
+stash_artifacts() {
     [[ -n "${STATE_ISSUE_DIR:-}" ]] || return 0
     mkdir -p "$STATE_ISSUE_DIR"
-    # Only the blueprint is carried across delivered iterations — it's what lets
-    # stage 01 skip regeneration. PROGRESS is run-scoped and intentionally not kept
-    # (restoring a COMPLETE trail would mislead the next run into "resuming").
+    local f
+    for f in "${LOOP_ARTIFACTS[@]}"; do
+        if [[ -f "$REPO_DIR/$f" ]]; then
+            cp "$REPO_DIR/$f" "$STATE_ISSUE_DIR/$f"
+        else
+            rm -f "$STATE_ISSUE_DIR/$f"
+        fi
+    done
+}
+
+# Repopulate a freshly cloned working tree from the volume (crash/timeout recovery).
+restore_artifacts() {
+    [[ -n "${STATE_ISSUE_DIR:-}" && -d "$STATE_ISSUE_DIR" ]] || return 0
+    local f restored=()
+    for f in "${LOOP_ARTIFACTS[@]}"; do
+        [[ -f "$STATE_ISSUE_DIR/$f" ]] && { cp "$STATE_ISSUE_DIR/$f" "$REPO_DIR/$f"; restored+=("$f"); }
+    done
+    [[ ${#restored[@]} -gt 0 ]] && log "Restored artifacts from state volume: ${restored[*]}"
+}
+
+# Called on successful delivery. Only the blueprint is carried across delivered
+# iterations — it lets a later PR-review pass skip re-planning. The run-scoped
+# artifacts are cleared so that pass doesn't resume against a stale COMPLETE trail.
+finalize_issue_state() {
+    [[ -n "${STATE_ISSUE_DIR:-}" ]] || return 0
+    mkdir -p "$STATE_ISSUE_DIR"
     [[ -f "$REPO_DIR/BLUEPRINT.md" ]] && cp "$REPO_DIR/BLUEPRINT.md" "$STATE_ISSUE_DIR/BLUEPRINT.md"
+    local f
+    for f in QUESTIONS.md PROGRESS.md VERIFY_ERRORS.md REQUESTED_CHANGES.md; do
+        rm -f "$STATE_ISSUE_DIR/$f"
+    done
     # Advance the feedback marker to when this run STARTED gathering (not now), so a
     # comment posted mid-run is reprocessed next iteration rather than silently skipped.
     printf '%s\n' "${FEEDBACK_MARKER_NEXT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" > "$STATE_ISSUE_DIR/last_processed_at"
-    log "Persisted issue state to $STATE_ISSUE_DIR"
-}
-
-restore_issue_state() {
-    [[ -n "${STATE_ISSUE_DIR:-}" && -d "$STATE_ISSUE_DIR" ]] || return 0
-    # A branch-tip blueprint (from an interrupted, not-yet-delivered run) is fresher —
-    # never overwrite it. Only fill it in when the branch no longer carries one
-    # (i.e. a post-delivery review iteration, where delivery stripped it).
-    if [[ ! -f "$REPO_DIR/BLUEPRINT.md" && -f "$STATE_ISSUE_DIR/BLUEPRINT.md" ]]; then
-        cp "$STATE_ISSUE_DIR/BLUEPRINT.md" "$REPO_DIR/BLUEPRINT.md"
-        log "Restored BLUEPRINT.md from persisted state (post-delivery review iteration)."
-    fi
+    log "Finalized issue state (kept blueprint, cleared run-scoped artifacts)."
 }
 
 # Collect PR review feedback posted since the last delivery into REQUESTED_CHANGES.md,
 # which the execute stage treats as the highest-priority instruction. This is what
 # turns a re-triggered PR from "re-implement the blueprint" into "address the review".
 gather_pr_feedback() {
-    # Capture the cutoff for the NEXT run before doing anything, so persist_issue_state
+    # Capture the cutoff for the NEXT run before doing anything, so finalize_issue_state
     # can advance the marker to run-start time (see the comment there).
     FEEDBACK_MARKER_NEXT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     export FEEDBACK_MARKER_NEXT
@@ -243,14 +288,16 @@ gc_closed_state() {
 }
 
 # ── Checkpoint helper — commit WIP + push branch so a crashed/timed-out run resumes ──
-# Commits everything on the agent branch (including the loop artifacts BLUEPRINT.md /
-# PROGRESS.md / VERIFY_ERRORS.md) and pushes it. While the loop runs, the pushed branch
-# IS the recovery trail: the next container checks it out and picks up exactly where this
-# one stopped. The artifacts are stripped from the branch tip at delivery (stage 04) so
-# they never appear in the final PR. Requires AGENT_BRANCH and git identity to be set.
-# Always returns 0 — a failed checkpoint must never abort the loop.
+# Commits the agent's real CODE work on the branch and pushes it. The loop artifacts
+# are NOT committed (they're excluded from git and mirrored to the state volume via
+# stash_artifacts instead) — so recovery is two-part: the pushed branch carries the
+# code, and the volume carries the plan/progress. Requires AGENT_BRANCH and git identity
+# to be set. Always returns 0 — a failed checkpoint must never abort the loop.
 checkpoint() {
     local msg="$1"
+    # Mirror artifacts to the volume first, so they survive even if the code commit
+    # below is a no-op or the push fails.
+    stash_artifacts
     (
         cd "$REPO_DIR" || exit 0
         git add --all
@@ -622,14 +669,21 @@ fi
 
 export AGENT_BRANCH
 
+# Keep loop artifacts out of git for this clone (and untrack any a legacy branch
+# committed). Must run before any checkpoint so `git add --all` never stages them.
+exclude_artifacts_from_git
+
 # ── Restore persisted context + gather PR review feedback ────────────────────
-# After a delivery the branch no longer carries the blueprint; pull it back from the
-# state volume so stage 01 reuses it instead of re-planning. Then, on a PR-review
-# iteration, collect the reviewer's new comments so the execute stage addresses them
-# incrementally rather than re-implementing the original plan.
-restore_issue_state
+# The branch never carries artifacts, so pull the plan/progress back from the state
+# volume (crash/timeout recovery, or a post-delivery review pass reusing the plan).
+# Then, on a PR-review iteration, collect the reviewer's new comments so the execute
+# stage addresses them incrementally rather than re-implementing the original plan.
+restore_artifacts
 gather_pr_feedback
 gather_ci_failures
+# Persist the just-gathered feedback (REQUESTED_CHANGES.md) so a crash before the
+# first checkpoint doesn't lose it.
+stash_artifacts
 
 # ── Git identity for checkpoint + delivery commits ───────────────────────────
 # Set once here so checkpoint() can commit throughout the loop, not just at delivery.
@@ -683,6 +737,10 @@ while [[ $RETRIES -lt $MAX_LOOP_RETRIES ]]; do
     PLAN_EXIT=0
     bash "$SCRIPT_DIR/loop-stages/01_plan/generate_blueprint.sh" || PLAN_EXIT=$?
 
+    # Save the plan stage's output (BLUEPRINT.md or QUESTIONS.md) to the volume now,
+    # before the exit-2 path returns without ever reaching a checkpoint.
+    stash_artifacts
+
     if [[ $PLAN_EXIT -eq 2 ]]; then
         # Planner wrote QUESTIONS.md — needs human decision before work can begin
         QUESTIONS_CONTENT=$(cat "$REPO_DIR/QUESTIONS.md" 2>/dev/null \
@@ -699,8 +757,9 @@ Please answer the questions above, then re-apply the \`$TRIGGER_LABEL\` label to
 
     [[ $PLAN_EXIT -ne 0 ]] && fail "Blueprint generation failed (exit $PLAN_EXIT)"
 
-    # Checkpoint the plan: pushes the branch so recovery has the blueprint even if the
-    # execute stage crashes. No-op on later iterations when the blueprint is unchanged.
+    # Checkpoint: pushes any code work + mirrors the blueprint to the volume, so
+    # recovery has the plan even if the execute stage crashes. On the first iteration
+    # there's usually no code yet, so this is often just an artifact stash.
     checkpoint "wip(#${ISSUE_NUM}): blueprint — ${ISSUE_TITLE}"
 
     # Stage 02: Execute
@@ -708,7 +767,7 @@ Please answer the questions above, then re-apply the \`$TRIGGER_LABEL\` label to
     bash "$SCRIPT_DIR/loop-stages/02_execute/run_opencode_agent.sh"
 
     # Checkpoint partial work immediately — before any decision below — so an interrupted
-    # (or timed-out) execution is preserved on the remote branch for the next run.
+    # (or timed-out) execution is preserved: code on the remote branch, progress in the volume.
     checkpoint "wip(#${ISSUE_NUM}): iteration $((RETRIES + 1)) — agent execution"
 
     # Agent execution timed out: work is checkpointed, but the task isn't finished. Skip
@@ -758,11 +817,15 @@ Human input is needed before the agent can continue. Update the issue with the r
         done
     fi
 
+    # Persist VERIFY_ERRORS.md so a crash before the next retry's checkpoint doesn't
+    # lose it — the next run needs it to know what to fix.
+    stash_artifacts
+
     if [[ "$ALL_PASSED" == "true" ]]; then
         log "All verify stages passed!"
-        # Stash the blueprint + feedback marker before delivery strips artifacts
-        # from the branch, so the next review iteration can reuse them.
-        persist_issue_state
+        # Keep the blueprint in the volume for a later review pass and clear the
+        # run-scoped artifacts, before delivery opens the PR.
+        finalize_issue_state
         log "Stage 04: Delivering..."
         export LOOP_ITERATIONS=$((RETRIES + 1))
         bash "$SCRIPT_DIR/loop-stages/04_deliver/open_github_pr.sh"

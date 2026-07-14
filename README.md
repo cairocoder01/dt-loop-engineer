@@ -279,7 +279,7 @@ Per-repo verify scripts in `.loop-engineer/verify/*.sh|js` are run after the sys
 ### `04_deliver` — PR Creation
 
 `open_github_pr.sh`:
-1. Strips the loop artifacts (`BLUEPRINT.md`, `PROGRESS.md`, `VERIFY_ERRORS.md`, `QUESTIONS.md`) that were checkpoint-committed during the loop — because they were added then removed on the same branch, the final PR diff omits them
+1. Tidies any loop artifacts (`BLUEPRINT.md`, `PROGRESS.md`, `VERIFY_ERRORS.md`, `QUESTIONS.md`) from the working tree — they're never committed in the first place (excluded from git and mirrored to the state volume), so this is just belt-and-braces before `git add`
 2. Scans staged changes for secret values (`GH_TOKEN`, `GEMINI_API_TOKEN`) before committing — aborts if found
 3. Commits with identity `DT Loop Engineer <loop-engineer[bot]@disciple.tools>` (on top of the WIP checkpoint commits already pushed during the loop)
 4. Pushes with `--force-with-lease` (safe to retry; fails if someone else pushed to the agent branch)
@@ -343,16 +343,16 @@ Before E2E tests run, `02b_prep_e2e_site.sh` syncs the agent's code changes into
 
 ### Crash & timeout recovery
 
-The loop **checkpoints progress to a pushed branch as it works** — this is what makes recovery real:
+Recovery is **two-part**: the agent's real code work lives on a pushed branch, while the loop artifacts (`BLUEPRINT.md`, `PROGRESS.md`, `VERIFY_ERRORS.md`, `REQUESTED_CHANGES.md`, `QUESTIONS.md`) are mirrored to the per-issue state volume (`state/issues/<repo>/<issue>/`) the moment they're written. The artifacts are **never committed** — they're added to the clone's `.git/info/exclude` — so the branch history stays clean.
 
-1. **After planning**, `BLUEPRINT.md` is committed and the agent branch is pushed. The plan now survives a crash.
-2. **After every execute iteration**, all partial work (plus `PROGRESS.md` / `VERIFY_ERRORS.md`) is committed and pushed.
-3. **On the next run**, the orchestrator finds the pushed `agent/<issue>-*` branch, checks it out, and continues:
-   - planning is **skipped** — the checked-in `BLUEPRINT.md` is reused, so work resumes from the exact plan it was built on;
+1. **After planning**, `BLUEPRINT.md` is stashed to the volume; any code work is committed and the branch is pushed. The plan now survives a crash.
+2. **After every execute iteration**, partial code work is committed and pushed, and `PROGRESS.md` (plus any `VERIFY_ERRORS.md`) is mirrored to the volume.
+3. **On the next run**, the orchestrator finds the pushed `agent/<issue>-*` branch, checks it out for the code, and restores the artifacts from the volume, then continues:
+   - planning is **skipped** — the stashed `BLUEPRINT.md` is reused, so work resumes from the exact plan it was built on;
    - the execute prompt is fed the prior `PROGRESS.md` trail and the committed partial changes, and told to continue rather than restart.
 4. **Agent timeouts** (`AGENT_TIMEOUT`) are treated as *resumable*, not as a human-input block: the partial work is checkpointed and the loop retries, continuing from the commit. Only genuine `BLOCKED:` states (missing information) route to `WAITING_LABEL`.
 
-The checkpoint artifacts (`BLUEPRINT.md`, `PROGRESS.md`, etc.) are stripped from the branch tip at delivery, so they never appear in the final PR.
+On successful delivery, only `BLUEPRINT.md` is kept in the volume (so a later PR-review pass can reuse the plan); the run-scoped artifacts are cleared so that pass doesn't resume against a stale trail. Because artifacts are never committed, they never appear in the PR.
 
 ---
 
