@@ -113,6 +113,10 @@ services:
       # Persists the WordPress install and test library across container restarts.
       # Without this, WP would be re-downloaded every time the container is recreated.
       - wp_data:/workspace/wp-data
+      # Caches per-target repo checkouts (one subfolder per repo). Runs reuse the
+      # clone — fetch + reset instead of a full re-clone — and keep vendor/ and
+      # node_modules/ warm across runs. Delete the volume to force fresh clones.
+      - repo_cache:/workspace/repo-cache
       # Uncomment to mount a WordPress options secrets file:
       # - ${WP_OPTIONS_FILE_HOST_PATH}:/run/secrets/wp-options:ro
 
@@ -120,3 +124,4 @@ volumes:
   mysql_data:
   state_data:
   wp_data:
+  repo_cache:

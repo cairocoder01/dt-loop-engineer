@@ -15,7 +15,12 @@ LOG_FILE="$LOG_DIR/$(date +%Y%m%d-%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Log: $LOG_FILE"
 STATE_DIR="$SCRIPT_DIR/state"
-REPO_DIR="$SCRIPT_DIR/repo"
+# Repo checkouts are cached per-target under REPO_CACHE_DIR (a Docker volume — see
+# docker-compose.yml) so runs against the same repo reuse the clone instead of
+# re-fetching every object. REPO_DIR is the per-target subfolder; it's set once
+# TARGET_REPO is known (after issue discovery), not here.
+REPO_CACHE_DIR="${REPO_CACHE_DIR:-$SCRIPT_DIR/repo-cache}"
+REPO_DIR=""
 BASE_BRANCH="${BASE_BRANCH:-}"   # auto-detected after clone; override via env var
 
 # ── Loop artifacts ───────────────────────────────────────────────────────────
@@ -533,6 +538,9 @@ ensure_repo_labels() {
 }
 ensure_repo_labels "$TARGET_REPO"
 
+# Per-target repo checkout inside the persistent cache volume.
+REPO_DIR="$REPO_CACHE_DIR/$TARGET_REPO"
+
 log "Issue:    [$TARGET_REPO#$ISSUE_NUM] $ISSUE_TITLE"
 log "          $ISSUE_URL"
 log "PR mode:  $PR_MODE${PR_MODE:+ (PR #$PR_NUM)}"
@@ -598,13 +606,49 @@ if [[ "$CI_FAILURE_MODE" == "true" ]]; then
     log "Label removed: '$READY_LABEL' (CI-failure rework in progress)"
 fi
 
-# ── Clone repo ───────────────────────────────────────────────────────────────
-rm -rf "$REPO_DIR"
-log "Cloning $GITHUB_OWNER/$TARGET_REPO..."
+# ── Sync repo (reuse cached checkout when available) ─────────────────────────
+# A cached checkout for this target is fetched + reset rather than re-cloned: a
+# fetch pulls only new objects, while a fresh clone re-downloads the whole history
+# every run. Ignored build dirs (vendor/, node_modules/) survive the reset below,
+# so composer/npm also start warm. If the cache is missing or doesn't look like a
+# clean clone of THIS repo, we fall back to a fresh clone.
 # Use plain HTTPS — gh auth login configured the credential helper, so the token
 # is injected transparently without appearing in the remote URL or process list.
-git clone "https://github.com/$GITHUB_OWNER/$TARGET_REPO.git" "$REPO_DIR"
-cd "$REPO_DIR"
+REPO_URL="https://github.com/$GITHUB_OWNER/$TARGET_REPO.git"
+mkdir -p "$REPO_CACHE_DIR"
+
+clone_fresh() {
+    log "Cloning $GITHUB_OWNER/$TARGET_REPO..."
+    rm -rf "$REPO_DIR"
+    git clone "$REPO_URL" "$REPO_DIR"
+    cd "$REPO_DIR"
+}
+
+repo_cache_is_valid() {
+    [[ -d "$REPO_DIR/.git" ]] || return 1
+    git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 1
+    # Reject a leftover checkout that points at a different repo.
+    local origin
+    origin=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null) || return 1
+    [[ "$origin" == "$REPO_URL" ]]
+}
+
+if repo_cache_is_valid; then
+    log "Reusing cached checkout: $REPO_DIR"
+    cd "$REPO_DIR"
+    # Clear any half-finished operation a crashed prior run may have left behind,
+    # so the fetch/reset below can't be blocked by an in-progress merge/rebase/am.
+    git merge --abort  >/dev/null 2>&1 || true
+    git rebase --abort >/dev/null 2>&1 || true
+    git am --abort     >/dev/null 2>&1 || true
+    if ! git fetch --prune origin; then
+        log "Fetch failed on cached checkout — falling back to a fresh clone."
+        cd "$REPO_CACHE_DIR"
+        clone_fresh
+    fi
+else
+    clone_fresh
+fi
 
 # ── Detect base branch ───────────────────────────────────────────────────────
 # Prefer an explicit env var override; otherwise probe the remote in priority order.
@@ -619,6 +663,13 @@ if [[ -z "$BASE_BRANCH" ]]; then
 fi
 log "Base branch: $BASE_BRANCH"
 export BASE_BRANCH
+
+# ── Reset onto a pristine base branch before hooks run ───────────────────────
+# For a fresh clone HEAD is already here; for a reused cache this discards the
+# previous run's branch, commits, and tracked edits so dependency install and the
+# worktree-clean hook operate on a clean base. --force drops local modifications
+# that would otherwise block the switch. Ignored build dirs are left untouched.
+git checkout --force -B "$BASE_BRANCH" "origin/$BASE_BRANCH"
 
 # ── Run pre-issue hooks ──────────────────────────────────────────────────────
 log "Running pre-issue hooks..."
@@ -649,7 +700,9 @@ fi
 
 if [[ -n "$EXISTING_BRANCH" ]]; then
     # --- Resume: check out the previously pushed branch (committed work + artifacts) ---
-    git checkout "$EXISTING_BRANCH"
+    # Force-sync to the remote ref: a cached checkout may hold a stale local branch of
+    # the same name from an earlier run, so -B resets it to exactly what origin has.
+    git checkout --force -B "$EXISTING_BRANCH" "origin/$EXISTING_BRANCH"
     AGENT_BRANCH="$EXISTING_BRANCH"
     log "Resuming on existing branch: $AGENT_BRANCH"
     # No "starting work" comment on purpose — the label flip to PROCESSING_LABEL is
@@ -660,10 +713,12 @@ elif [[ "$RECOVERY_MODE" == "true" ]]; then
     # — the previous run crashed before its first checkpoint. Nothing to resume, so start
     # fresh on the branch and redo the work from the plan.
     log "Recovery expected but no pushed branch found — starting fresh on $AGENT_BRANCH"
-    git checkout -b "$AGENT_BRANCH"
+    # -B (not -b) so a leftover local branch of this name in a reused cache can't
+    # collide; HEAD is already on the pristine base, so this branches from there.
+    git checkout -B "$AGENT_BRANCH"
 else
     # --- Fresh start ---
-    git checkout -b "$AGENT_BRANCH"
+    git checkout -B "$AGENT_BRANCH"
     log "Working branch: $AGENT_BRANCH"
 fi
 
