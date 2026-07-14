@@ -14,6 +14,7 @@
 
 # Globals written by opencode_with_fallback:
 OPENCODE_LAST_EXIT=0
+# shellcheck disable=SC2034  # read by the sourcing script (e.g. run_opencode_agent.sh), not here
 OPENCODE_USED_MODEL=""
 
 _oc_is_rate_limited() {
@@ -47,10 +48,12 @@ opencode_with_fallback() {
     local attempt=0
     local tmp_out
     OPENCODE_LAST_EXIT=0
-    OPENCODE_USED_MODEL=""
+    # shellcheck disable=SC2034  # read by the sourcing script (e.g. run_opencode_agent.sh), not here
+OPENCODE_USED_MODEL=""
 
     for model in "${models[@]}"; do
         attempt=$((attempt + 1))
+        # shellcheck disable=SC2034  # read by the sourcing script (e.g. run_opencode_agent.sh), not here
         OPENCODE_USED_MODEL="$model"
         tmp_out=$(mktemp /tmp/opencode-out.XXXXXX)
 
