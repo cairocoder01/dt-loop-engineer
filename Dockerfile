@@ -1,4 +1,4 @@
-FROM alpine:3.19
+FROM alpine:3.22
 
 # Runtime dependencies: PHP 8.2, Node, Git, GitHub CLI, Chromium, Composer
 RUN apk add --no-cache \
@@ -29,6 +29,10 @@ RUN apk add --no-cache \
 
 # PHP alias (Alpine names it php82)
 RUN ln -s /usr/bin/php82 /usr/local/bin/php
+
+# MariaDB 11.x client verifies TLS certs by default; skip it for mysql:8.0's
+# self-signed cert (keeps encryption). Applies to all CLI DB connections.
+RUN printf '[client]\nssl-verify-server-cert=OFF\n' > /etc/my.cnf.d/client-ssl.cnf
 
 # GitHub CLI — install the latest official release rather than Alpine's `github-cli`
 # package, which lags badly (alpine:3.19 shipped gh 2.39.x, whose `gh pr edit
